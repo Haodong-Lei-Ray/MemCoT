@@ -59,7 +59,7 @@ from lightrag.utils import EmbeddingFunc
 from vllm_llm import _make_llm_model_func
 
 # Defaults
-RAG_STORAGE_BASE = "/mnt/petrelfs/leihaodong/ICML/exp/memory/lightrag/rag_storage"
+RAG_STORAGE_BASE = "../memory/lightrag/rag_storage"
 # User turns are typically short (30-150 tokens); use large limit to avoid splitting.
 USER_CHUNK_TOKEN_SIZE = 4096
 # Assistant turns are longer (300-800+ tokens); use moderate size for entity/relation extraction.
@@ -324,8 +324,8 @@ async def build_single(
 # ── 批量并发 ──────────────────────────────────────────────────────
 
 def _name_from_stem(stem: str) -> str:
-    """去掉 leading 数字+下划线，与 run_build_te3s.sh NAME 保持一致。"""
-    return re.sub(r"^\d+_", "", stem)
+    """保留原始 stem（包含前缀数字）。"""
+    return stem
 
 
 _DONE_MARKER = "_BUILD_DONE"

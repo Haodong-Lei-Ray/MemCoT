@@ -8,7 +8,8 @@ __pycache__/
 script/__pycache__/
 script/**/__pycache__/
 
-# LoCoMo benchmark local data artifacts
-benchmark/locomo/data/
-benchmark/locomo/data/skip/
-benchmark/locomo/data/skip.tar.gz
+# LoCoMo benchmark local data artifacts (ignore all files under data/)
+benchmark/locomo/data/**
+
+# LongMemEval local data artifacts (ignore all files under data/)
+benchmark/longmemeval/data/**
