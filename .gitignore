@@ -9,5 +9,6 @@ script/__pycache__/
 script/**/__pycache__/
 
 # LoCoMo benchmark local data artifacts
+benchmark/locomo/data/
 benchmark/locomo/data/skip/
 benchmark/locomo/data/skip.tar.gz
