@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=100-149-o
-#SBATCH --output=../memory/longmemeval/lightrag/log/s/run_build_te3s_all_%j.out
-#SBATCH --error=../memory/longmemeval/lightrag/log/s/run_build_te3s_all_%j.err
+#SBATCH --output=../../../../../../../memory/longmemeval/lightrag/log/s/run_build_te3s_all_%j.out
+#SBATCH --error=../../../../../../../memory/longmemeval/lightrag/log/s/run_build_te3s_all_%j.err
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH -p DataFrontier_Knowledge
@@ -18,7 +18,7 @@ LOG_DIR="../memory/longmemeval/lightrag/log/s"
 mkdir -p "$LOG_DIR" "$RAG_OUT"
 
 cd /home/lei/Project/DMSMem
-source scripts/env.sh 2>/dev/null || true
+source benchmark/locomo/scripts/env.sh 2>/dev/null || true
 
 VLLM_CONFIG="${VLLM_CONFIG:-benchmark/longmemevaltool/tool/buildrag/config/config8101.json}"
 

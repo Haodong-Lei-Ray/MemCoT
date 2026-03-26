@@ -7,3 +7,8 @@ sbatch ./run_build_s_te3s_all_50-99.sh # 8104
 # sbatch ./run_build_m_te3s_all_350-399.sh # 8106
 # sbatch ./run_build_m_te3s_all_400-449.sh # 8107
 # sbatch ./run_build_m_te3s_all_450-499.sh # 8108
+
+sbatch -p debug \
+  --output=/home/lei/Project/memory/longmemeval/lightrag/log/s/run_build_te3s_all_%j.out \
+  --error=/home/lei/Project/memory/longmemeval/lightrag/log/s/run_build_te3s_all_%j.err \
+  run_build_s_te3s_all_200.sh

@@ -41,11 +41,11 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-# Project root (locomo)
+# Path setup
 SCRIPT_DIR = Path(__file__).resolve().parent
-BENCHMARK_DIR = SCRIPT_DIR.parent.parent
-PROJECT_ROOT = BENCHMARK_DIR.parent.parent
-LIGHTRAG_PATH = PROJECT_ROOT / "module_unit" / "LightRAG"
+# /home/lei/Project/DMSMem/benchmark/longmemevaltool/tool/buildrag -> /home/lei/Project/DMSMem
+PROJECT_ROOT = SCRIPT_DIR.parents[3]
+LIGHTRAG_PATH = PROJECT_ROOT / "mem" / "LightRAG"
 sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(LIGHTRAG_PATH))
 
