@@ -7,3 +7,7 @@ __pycache__/
 # Explicitly ignore cache under script
 script/__pycache__/
 script/**/__pycache__/
+
+# LoCoMo benchmark local data artifacts
+benchmark/locomo/data/skip/
+benchmark/locomo/data/skip.tar.gz
