@@ -1,0 +1,9 @@
+# Python bytecode/cache
+*.pyc
+*.pyo
+*.pyd
+__pycache__/
+
+# Explicitly ignore cache under script
+script/__pycache__/
+script/**/__pycache__/

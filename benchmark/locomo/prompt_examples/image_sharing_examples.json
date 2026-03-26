@@ -1,0 +1,14 @@
+{
+    "prompt": "Modify speaker's DIALOG to include context from the CAPTION of the photo shared the speaker with a certain INTENT.",
+    "input_format": "DIALOG: {}\nCAPTION: {}\nINTENT:{}\nMODIFIED_DIALOG: ",
+    "examples": [
+      {
+        "input": [
+            "I love having empanadas while studying. They remind me of when I visited Spain!", 
+            "a photo of a plate of food on a wooden table",
+            "shares a photo of empanadas she made during a cooking class in Spain"
+        ],
+        "output": "I love having empanadas while studying. They remind me of when I visited Spain! I made some during a cooking class in Spain!"
+      }
+    ]
+  }
