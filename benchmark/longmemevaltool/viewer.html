@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LongMemEval 题目查看器</title>
+  <style>
+    :root {
+      --bg: #1a1d23;
+      --card: #252830;
+      --text: #e4e6eb;
+      --muted: #8b9199;
+      --accent: #6ea8fe;
+      --accent-dim: #4a7cc4;
+      --evidence: rgba(34, 197, 94, 0.25);
+      --abstention: rgba(239, 68, 68, 0.25);
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: "Segoe UI", system-ui, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
+    .container { display: flex; height: 100vh; overflow: hidden; }
+    .sidebar { width: 340px; min-width: 280px; background: var(--card); border-right: 1px solid rgba(255,255,255,0.06); display: flex; flex-direction: column; overflow: hidden; }
+    .main { flex: 1; overflow: auto; padding: 1.5rem; }
+    .load-bar { padding: 1rem; border-bottom: 1px solid rgba(255,255,255,0.06); }
+    .load-bar input[type="file"] { display: none; }
+    .load-btn { display: block; width: 100%; padding: 0.6rem 1rem; background: var(--accent); color: #fff; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; }
+    .load-btn:hover { background: var(--accent-dim); }
+    .load-hint { font-size: 12px; color: var(--muted); margin-top: 0.5rem; }
+    .filter { padding: 0.75rem 1rem; border-bottom: 1px solid rgba(255,255,255,0.06); }
+    .filter input { width: 100%; padding: 0.5rem; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; color: var(--text); font-size: 13px; }
+    .filter input::placeholder { color: var(--muted); }
+    .filter select { width: 100%; margin-top: 0.5rem; padding: 0.5rem; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; color: var(--text); font-size: 13px; }
+    .q-list { flex: 1; overflow-y: auto; padding: 0.5rem; }
+    .q-item { padding: 0.6rem 0.75rem; margin-bottom: 4px; border-radius: 6px; cursor: pointer; font-size: 13px; border: 1px solid transparent; transition: all 0.15s; }
+    .q-item:hover { background: rgba(255,255,255,0.05); }
+    .q-item.active { background: rgba(110, 168, 254, 0.15); border-color: var(--accent); }
+    .q-item .idx { color: var(--muted); font-size: 11px; margin-bottom: 2px; }
+    .q-item .type { font-size: 11px; color: var(--accent); margin-bottom: 2px; }
+    .q-item .preview { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .q-item.abstention .type { color: #f87171; }
+    .qa-card { background: var(--card); border-radius: 8px; padding: 1.25rem; margin-bottom: 1rem; }
+    .qa-card h2 { font-size: 16px; margin: 0 0 1rem; color: var(--accent); }
+    .qa-card .meta { display: flex; flex-wrap: wrap; gap: 1rem; font-size: 13px; margin-bottom: 1rem; }
+    .qa-card .meta span { color: var(--muted); }
+    .qa-card .question { font-size: 15px; line-height: 1.5; margin-bottom: 1rem; padding: 0.75rem; background: rgba(0,0,0,0.2); border-radius: 6px; }
+    .qa-card .answer { font-size: 14px; padding: 0.75rem; background: var(--evidence); border-radius: 6px; border-left: 4px solid #22c55e; }
+    .qa-card .answer.abstention { background: var(--abstention); border-left-color: #ef4444; }
+    .sessions { margin-top: 1rem; }
+    .sessions h3 { font-size: 14px; color: var(--muted); margin: 0 0 0.75rem; }
+    .session { margin-bottom: 1rem; border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; overflow: hidden; }
+    .session.is-evidence { border-color: #22c55e; background: rgba(34, 197, 94, 0.08); }
+    .session-header { padding: 0.5rem 0.75rem; background: rgba(0,0,0,0.2); font-size: 12px; color: var(--muted); display: flex; justify-content: space-between; align-items: center; cursor: pointer; }
+    .session-header:hover { background: rgba(0,0,0,0.3); }
+    .session-header .badge { font-size: 10px; padding: 2px 6px; border-radius: 4px; background: #22c55e; color: #111; margin-left: 0.5rem; }
+    .session-body { padding: 0.5rem; max-height: 400px; overflow-y: auto; }
+    .session-body.collapsed { max-height: 0; padding: 0; overflow: hidden; }
+    .turn { margin-bottom: 0.75rem; font-size: 13px; line-height: 1.5; }
+    .turn:last-child { margin-bottom: 0; }
+    .turn .role { font-size: 11px; font-weight: 600; margin-bottom: 4px; }
+    .turn .role.user { color: #60a5fa; }
+    .turn .role.assistant { color: #a78bfa; }
+    .turn .content { padding: 0.5rem; background: rgba(0,0,0,0.2); border-radius: 4px; white-space: pre-wrap; word-break: break-word; }
+    .turn.has-answer .content { border-left: 3px solid #22c55e; background: var(--evidence); }
+    .empty-state { text-align: center; padding: 4rem 2rem; color: var(--muted); }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <aside class="sidebar">
+      <div class="load-bar">
+        <label class="load-btn" for="fileInput">📂 选择本地 JSON 文件</label>
+        <input type="file" id="fileInput" accept=".json">
+        <button class="load-btn" id="loadDefault" style="margin-top:0.5rem;background:var(--accent-dim)">📥 加载 data/longmemeval_s_cleaned.json</button>
+        <button class="load-btn" id="loadOracle" style="margin-top:0.5rem;background:var(--accent-dim)">📥 加载 data/longmemeval_oracle.json</button>
+        <div class="load-hint">若用 python serve_viewer.py 启动，可用上方按钮直接加载；否则请选本地文件</div>
+      </div>
+      <div class="filter" style="display:none" id="filterBar">
+        <input type="text" id="searchInput" placeholder="搜索 question_id 或问题…">
+        <select id="typeFilter">
+          <option value="">全部类型</option>
+          <option value="single-session-user">single-session-user</option>
+          <option value="single-session-assistant">single-session-assistant</option>
+          <option value="single-session-preference">single-session-preference</option>
+          <option value="multi-session">multi-session</option>
+          <option value="temporal-reasoning">temporal-reasoning</option>
+          <option value="knowledge-update">knowledge-update</option>
+          <option value="abstention">Abstention</option>
+        </select>
+      </div>
+      <div class="q-list" id="qList"></div>
+    </aside>
+    <main class="main" id="main">
+      <div class="empty-state" id="emptyState">请先加载 JSON 文件</div>
+      <div id="content" style="display:none"></div>
+    </main>
+  </div>
+  <script>
+    let data = [];
+    let filtered = [];
+    let currentIdx = 0;
+    const fileInput = document.getElementById('fileInput');
+    const qList = document.getElementById('qList');
+    const main = document.getElementById('main');
+    const content = document.getElementById('content');
+    const emptyState = document.getElementById('emptyState');
+    const filterBar = document.getElementById('filterBar');
+    const searchInput = document.getElementById('searchInput');
+    const typeFilter = document.getElementById('typeFilter');
+    const loadDefault = document.getElementById('loadDefault');
+
+    async function loadData(jsonData) {
+      data = jsonData;
+      if (!Array.isArray(data)) { alert('JSON 应为数组'); return; }
+      filterBar.style.display = 'block';
+      applyFilter();
+      renderList();
+      selectQuestion(0);
+    }
+
+    loadDefault?.addEventListener('click', async () => {
+      try {
+        const r = await fetch('data/longmemeval_s_cleaned.json');
+        if (!r.ok) throw new Error(r.statusText);
+        const json = await r.json();
+        loadData(json);
+      } catch (err) {
+        alert('加载失败（请用 python serve_viewer.py 启动后访问）: ' + err.message);
+      }
+    });
+
+    document.getElementById('loadOracle')?.addEventListener('click', async () => {
+      try {
+        const r = await fetch('data/longmemeval_oracle.json');
+        if (!r.ok) throw new Error(r.statusText);
+        const json = await r.json();
+        loadData(json);
+      } catch (err) {
+        alert('加载失败（请用 python serve_viewer.py 启动后访问）: ' + err.message);
+      }
+    });
+
+    fileInput.addEventListener('change', async (e) => {
+      const f = e.target.files[0];
+      if (!f) return;
+      try {
+        const json = await f.text();
+        loadData(JSON.parse(json));
+      } catch (err) {
+        alert('加载失败：' + err.message);
+      }
+    });
+
+    function applyFilter() {
+      const q = (searchInput?.value || '').toLowerCase();
+      const t = typeFilter?.value || '';
+      filtered = data
+        .map((item, i) => ({ item, origIdx: i }))
+        .filter(({ item }) => {
+          const matchSearch = !q || 
+            (item.question_id || '').toLowerCase().includes(q) ||
+            (item.question || '').toLowerCase().includes(q);
+          const isAbs = (item.question_id || '').endsWith('_abs');
+          const matchType = !t || 
+            (t === 'abstention' ? isAbs : item.question_type === t);
+          return matchSearch && matchType;
+        });
+    }
+
+    function renderList() {
+      qList.innerHTML = filtered.map(({ item, origIdx }, i) => {
+        const isAbs = (item.question_id || '').endsWith('_abs');
+        return `<div class="q-item ${isAbs ? 'abstention' : ''} ${i === currentIdx ? 'active' : ''}" data-idx="${i}">
+          <div class="idx">#${origIdx + 1} · ${item.question_id || '-'}</div>
+          <div class="type">${item.question_type || '-'}${isAbs ? ' (Abstention)' : ''}</div>
+          <div class="preview">${(item.question || '').slice(0, 60)}${(item.question || '').length > 60 ? '…' : ''}</div>
+        </div>`;
+      }).join('');
+      qList.querySelectorAll('.q-item').forEach(el => {
+        el.addEventListener('click', () => selectQuestion(parseInt(el.dataset.idx)));
+      });
+    }
+
+    function selectQuestion(idx) {
+      currentIdx = Math.max(0, Math.min(idx, filtered.length - 1));
+      renderList();
+      if (filtered.length === 0) {
+        emptyState.style.display = 'block';
+        content.style.display = 'none';
+        emptyState.textContent = '无匹配题目';
+        return;
+      }
+      emptyState.style.display = 'none';
+      content.style.display = 'block';
+      const { item } = filtered[currentIdx];
+      renderDetail(item);
+    }
+
+    function renderDetail(item) {
+      const ansIds = new Set(item.answer_session_ids || []);
+      const isAbs = (item.question_id || '').endsWith('_abs');
+      const sessionsHtml = (item.haystack_sessions || []).map((session, si) => {
+        const sid = (item.haystack_session_ids || [])[si] || `session_${si}`;
+        const date = (item.haystack_dates || [])[si] || '';
+        const isEvidence = ansIds.has(sid);
+        const turnsHtml = (session || []).map(turn => {
+          const role = turn.role || 'unknown';
+          const hasAns = !!turn.has_answer;
+          return `<div class="turn ${hasAns ? 'has-answer' : ''}">
+            <div class="role ${role}">${role}${hasAns ? ' ✓ 含答案' : ''}</div>
+            <div class="content">${escapeHtml(turn.content || '')}</div>
+          </div>`;
+        }).join('');
+        return `<div class="session ${isEvidence ? 'is-evidence' : ''}">
+          <div class="session-header" data-toggle>
+            <span>Session ${si + 1}: ${sid}</span>
+            <span>${date}${isEvidence ? '<span class="badge">证据</span>' : ''}</span>
+          </div>
+          <div class="session-body">${turnsHtml}</div>
+        </div>`;
+      }).join('');
+
+      content.innerHTML = `
+        <div class="qa-card">
+          <h2>题目详情</h2>
+          <div class="meta">
+            <span>question_id: ${escapeHtml(item.question_id || '-')}</span>
+            <span>question_type: ${escapeHtml(item.question_type || '-')}</span>
+            <span>question_date: ${escapeHtml(item.question_date || '-')}</span>
+          </div>
+          <div class="question">${escapeHtml(item.question || '-')}</div>
+          <div class="answer ${isAbs ? 'abstention' : ''}">${escapeHtml(item.answer || '-')}</div>
+          <div class="meta" style="margin-top:0.5rem">answer_session_ids: ${escapeHtml(JSON.stringify(item.answer_session_ids || []))}</div>
+        </div>
+        <div class="sessions">
+          <h3>Haystack Sessions (${(item.haystack_sessions || []).length} 个)</h3>
+          ${sessionsHtml}
+        </div>
+      `;
+      content.querySelectorAll('.session-header[data-toggle]').forEach(h => {
+        h.addEventListener('click', () => h.nextElementSibling.classList.toggle('collapsed'));
+      });
+    }
+
+    function escapeHtml(s) {
+      const div = document.createElement('div');
+      div.textContent = s;
+      return div.innerHTML;
+    }
+
+    searchInput?.addEventListener('input', () => { applyFilter(); renderList(); selectQuestion(0); });
+    typeFilter?.addEventListener('change', () => { applyFilter(); renderList(); selectQuestion(0); });
+
+    document.addEventListener('keydown', (e) => {
+      if (filtered.length === 0) return;
+      if (e.key === 'ArrowDown' || e.key === 'j') { e.preventDefault(); selectQuestion(currentIdx + 1); }
+      if (e.key === 'ArrowUp' || e.key === 'k') { e.preventDefault(); selectQuestion(currentIdx - 1); }
+    });
+  </script>
+</body>
+</html>
