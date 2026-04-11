@@ -27,10 +27,11 @@ import asyncio
 from functools import partial
 from pathlib import Path
 
-# Add project root and LightRAG to path
-PROJECT_ROOT = Path(__file__).parent.parent
-LIGHTRAG_PATH = PROJECT_ROOT / "module_unit" / "LightRAG"
-sys.path.insert(0, str(PROJECT_ROOT))
+# MemCoT repo root (…/benchmark/locomo/task_eval -> parents[3])
+MEMCOT_ROOT = Path(__file__).resolve().parents[3]
+LOCOMO_ROOT = Path(__file__).resolve().parents[1]  # benchmark/locomo
+LIGHTRAG_PATH = MEMCOT_ROOT / "mem" / "LightRAG"
+sys.path.insert(0, str(MEMCOT_ROOT))
 sys.path.insert(0, str(LIGHTRAG_PATH))
 
 # Ensure OPENAI_API_BASE is set for LightRAG (uses this instead of OPENAI_BASE_URL)
@@ -45,7 +46,7 @@ from lightrag.llm.openai import gpt_4o_mini_complete, openai_embed
 
 
 # ──────────────────────────── Configuration ────────────────────────────
-DATA_PATH = PROJECT_ROOT / "data" / "locomo10.json"
+DATA_PATH = LOCOMO_ROOT / "data" / "locomo10.json"
 RAG_STORAGE_BASE = "/mnt/petrelfs/leihaodong/ICML/exp/memory/lightrag/rag_storage"
 
 # LightRAG hyperparameters (rag_mode == 'dialog': one chunk per dialog turn)
