@@ -15,14 +15,15 @@ import traceback
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+import time
 
 import regex
 import numpy as np
 from nltk.stem import PorterStemmer
 
-PROJECT_ROOT = Path(__file__).parent.parent.parent
+PROJECT_ROOT = Path(__file__).parent
 sys.path.insert(0, str(PROJECT_ROOT))
-from module_version.version2.dmsmem import (
+from dmsmem import (
     run_react_lightrag,
     run_react_lightrag_async,
     create_lightrag,
@@ -38,11 +39,11 @@ from module_version.version2.dmsmem import (
     RAG_TYPE_CHOICES,
     DEFAULT_AGENT_FLAG,
 )
-from module_version.version2.agent.agent import _build_full_conv_context
+from agent.agent import _build_full_conv_context
 
 ps = PorterStemmer()
 
-DATA_PATH = PROJECT_ROOT / "data" / "locomo10.json"
+DATA_PATH = PROJECT_ROOT / "benchmark" / "locomo" / "data" / "locomo10.json"
 DEFAULT_OUTPUT_DIR = Path(__file__).parent / "eval_output"
 DEFAULT_MODEL = "Qwen/Qwen2.5-14B-Instruct"
 NUM_QA = 20
@@ -144,6 +145,13 @@ def main():
                         help=f"图片索引根目录 (default: {DEFAULT_IMG_INDEX_BASE})")
     parser.add_argument("--concurrency", type=int, default=1,
                         help="QA 并发数（默认 1 即串行；>1 时 asyncio 并发评测）")
+    parser.add_argument(
+        "--benchmark",
+        type=str,
+        default="locomo",
+        help="benchmark 名称标签（字符串），将写入输出 JSON",
+    )
+    
     args = parser.parse_args()
 
     print(args)
@@ -187,6 +195,9 @@ def main():
     print(f"Output: {output_dir}")
     print(f"Sample: {sample_id}")
     print(f"Evaluating {len(qa_list)} QA pairs via ReAct+LightRAG")
+    benchmark = args.benchmark or ""
+    if args.benchmark:
+        print(f"Benchmark: {args.benchmark}")
     print("=" * 70)
 
     results = []
@@ -253,7 +264,7 @@ def main():
             gold_evidence = [gold_evidence] if gold_evidence else []
         elif not isinstance(gold_evidence, list):
             gold_evidence = []
-
+        t0 = time.perf_counter()
         try_step = 2
         prediction = ""
         final_evidence = []
@@ -396,14 +407,14 @@ def main():
         }
 
     # ── 收集结果 & 落盘（单线程事件循环内无竞争，无需锁） ────────────────
-    def _collect_result(result_dict: dict | None) -> None:
+    def _collect_result(result_dict: dict | None,benchmark=None) -> None:
         if result_dict is None:
             return
         results.append(result_dict)
         already_ids.add(result_dict["qa_id"])
         f1_scores = [d.get("event_search_f1", 0) for d in results]
         recall_scores = [d.get("recall", 1.0) for d in results]
-        _save_output(output_path, sample_id, model, qa_list, results, f1_scores, recall_scores)
+        _save_output(output_path, sample_id, model, qa_list, results, f1_scores, recall_scores, benchmark=benchmark)
 
     # ── 执行（串行 or 并发） ──────────────────────────────────────────
     concurrency = max(1, args.concurrency)
@@ -416,6 +427,7 @@ def main():
             _collect_result(result)
     else:
         async def _run_concurrent():
+            # 使用外层已声明的 benchmark 变量，避免并发分支作用域未定义
             sem = asyncio.Semaphore(concurrency)
             completed_count = 0
             total = len(pending)
@@ -438,7 +450,7 @@ def main():
             tasks = [asyncio.create_task(_bounded(i, qa)) for i, qa in pending]
             for coro in asyncio.as_completed(tasks):
                 idx, result = await coro
-                _collect_result(result)
+                _collect_result(result,benchmark)
                 completed_count += 1
                 print(f"  [Progress] {completed_count}/{total} done, {len(results)} saved")
 
@@ -452,7 +464,7 @@ def main():
     recall_scores = [d.get("recall", 1.0) for d in results]
     mean_f1 = sum(f1_scores) / len(f1_scores) if f1_scores else 0.0
     mean_recall = sum(recall_scores) / len(recall_scores) if recall_scores else 0.0
-    _save_output(output_path, sample_id, model, qa_list, results, f1_scores, recall_scores)
+    _save_output(output_path, sample_id, model, qa_list, results, f1_scores, recall_scores, benchmark=args.benchmark)
 
     print("\n" + "=" * 70)
     print(f"Results saved to: {output_path}")
@@ -465,7 +477,16 @@ def main():
 def _qa_id_sort_key(x):
     return int(str(x or ""))
 
-def _save_output(output_path, sample_id, model, qa_list, results, f1_scores, recall_scores=None):
+def _save_output(
+    output_path,
+    sample_id,
+    model,
+    qa_list,
+    results,
+    f1_scores,
+    recall_scores=None,
+    benchmark="",
+):
     if recall_scores is None:
         recall_scores = [d.get("recall", 1.0) for d in results if "recall" in d]
         if len(recall_scores) < len(results):
@@ -484,6 +505,7 @@ def _save_output(output_path, sample_id, model, qa_list, results, f1_scores, rec
     mean_recall = sum(recall_scores) / len(recall_scores) if recall_scores else 0.0
     output = {
         "sample_id": sample_id,
+        "benchmark": benchmark,
         "model": model,
         "method": "react_lightrag",
         "n": len(results),

@@ -10,20 +10,17 @@ import json
 import os
 import string
 import sys
-import threading
 import traceback
 from collections import Counter
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import regex
 import numpy as np
 from nltk.stem import PorterStemmer
 
-PROJECT_ROOT = Path(__file__).parent.parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(PROJECT_ROOT))
-from module_version.version2.react_allrag import (
-    run_react_lightrag,
+from dmsmem import (
     create_lightrag,
     finalize_lightrag,
     create_img_retriever,
@@ -36,11 +33,12 @@ from module_version.version2.react_allrag import (
     RAG_TYPE_CHOICES,
     DEFAULT_AGENT_FLAG,
 )
-from module_version.version2.agent.agent import _build_full_conv_context
+from one_line import run_react_lightrag
+from agent.agent import _build_full_conv_context
 
 ps = PorterStemmer()
 
-DATA_PATH = PROJECT_ROOT / "data" / "locomo10.json"
+DATA_PATH = PROJECT_ROOT / "benchmark" / "locomo" / "data" / "locomo10.json"
 DEFAULT_OUTPUT_DIR = Path(__file__).parent / "eval_output"
 DEFAULT_MODEL = "Qwen/Qwen2.5-14B-Instruct"
 NUM_QA = 20
@@ -130,7 +128,7 @@ def main():
     parser.add_argument("-o", "--output-dir", default=None, help="Output directory")
     parser.add_argument("--resume", action="store_true", help="Resume from existing output JSON")
     parser.add_argument("--skip-category", type=int, nargs="*", default=[], help="Skip QA categories (e.g. --skip-category 1 2 3 4)")
-    parser.add_argument("--lightrag-base", default=DEFAULT_LIGHTRAG_WORKING_BASE,
+    parser.add_argument("--rag-base", default=DEFAULT_LIGHTRAG_WORKING_BASE,
                         help=f"LightRAG 索引根目录 (default: {DEFAULT_LIGHTRAG_WORKING_BASE})")
     parser.add_argument("--sample-id", "--conv", dest="sample_id", default="conv-26",
                         help="样本 ID，如 conv-26, conv-30 (default: conv-26)")
@@ -141,8 +139,10 @@ def main():
     parser.add_argument("--img-index-base", default=DEFAULT_IMG_INDEX_BASE,
                         help=f"图片索引根目录 (default: {DEFAULT_IMG_INDEX_BASE})")
     parser.add_argument("--concurrency", type=int, default=1,
-                        help="QA 并发数（默认 1 即串行；>1 时多线程并行评测）")
+                        help="兼容旧命令行；评测仅为同步串行，该值会被忽略")
     args = parser.parse_args()
+    if args.concurrency != 1:
+        print(f"Note: --concurrency={args.concurrency} ignored (serial only, same as one_line.py main).")
 
     print(args)
     
@@ -217,7 +217,7 @@ def main():
 
     # 构建 working_dir
     workspace = _conv_id_to_workspace(sample_id)
-    working_dir = os.path.join(args.lightrag_base, workspace)
+    working_dir = os.path.join(args.rag_base, workspace)
     
     # 载入 LightRAG（仅初始化一次，后续检索复用同一实例）
     rag = None
@@ -231,7 +231,7 @@ def main():
     if args.agent_flag[4] == "1":
         print("初始化视觉搜索...")
         img_retriever = create_img_retriever(sample_id, img_index_base=args.img_index_base)
-    # ── 单个 QA 处理函数（供串行 / 并行共用） ──────────────────────────
+    # ── 单个 QA（同步串行，与 one_line.py 单次 run_react_lightrag 一致） ──
     def _process_one_qa(i: int, qa: dict) -> dict | None:
         effective_qa_id = i + 1
         if effective_qa_id in already_ids:
@@ -312,39 +312,21 @@ def main():
             "gold_evidence": gold_evidence,
         }
 
-    # ── 收集结果 & 落盘（线程安全） ─────────────────────────────────────
-    _results_lock = threading.Lock()
-
     def _collect_result(result_dict: dict | None) -> None:
         if result_dict is None:
             return
-        with _results_lock:
-            results.append(result_dict)
-            already_ids.add(result_dict["qa_id"])
-            f1_scores = [d.get("event_search_f1", 0) for d in results]
-            recall_scores = [d.get("recall", 1.0) for d in results]
-            _save_output(output_path, sample_id, model, qa_list, results, f1_scores, recall_scores)
+        results.append(result_dict)
+        already_ids.add(result_dict["qa_id"])
+        f1_scores = [d.get("event_search_f1", 0) for d in results]
+        recall_scores = [d.get("recall", 1.0) for d in results]
+        _save_output(output_path, sample_id, model, qa_list, results, f1_scores, recall_scores)
 
-    # ── 执行（串行 or 并行） ────────────────────────────────────────────
-    concurrency = max(1, args.concurrency)
     pending = [(i, qa) for i, qa in enumerate(qa_list) if (i + 1) not in already_ids]
-    print(f"\n待评测 {len(pending)} 个 QA，concurrency={concurrency}")
+    print(f"\n待评测 {len(pending)} 个 QA（同步串行）")
 
-    if concurrency == 1:
-        for i, qa in pending:
-            result = _process_one_qa(i, qa)
-            _collect_result(result)
-    else:
-        with ThreadPoolExecutor(max_workers=concurrency) as pool:
-            futures = {pool.submit(_process_one_qa, i, qa): i for i, qa in pending}
-            for fut in as_completed(futures):
-                idx = futures[fut]
-                try:
-                    result = fut.result()
-                    _collect_result(result)
-                except Exception as e:
-                    print(f"  [QA {idx+1}] FATAL: {e}")
-                    traceback.print_exc()
+    for i, qa in pending:
+        result = _process_one_qa(i, qa)
+        _collect_result(result)
 
     finalize_lightrag(rag)
 

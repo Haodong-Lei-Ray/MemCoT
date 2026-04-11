@@ -3,6 +3,11 @@ import json
 import time
 import sys
 import os
+import asyncio
+import functools
+from contextlib import contextmanager
+from contextvars import ContextVar
+from pathlib import Path
 
 try:
     import google.generativeai as genai
@@ -12,16 +17,92 @@ from anthropic import Anthropic
 
 # OpenAI client for v1.x API (set by set_openai_key)
 _openai_client = None
+_openai_client_cache = {}
+_agent_llm_override: ContextVar[dict | None] = ContextVar("agent_llm_override", default=None)
+_llm_config_cache = {}
+
+
+def _load_llm_config(config_path: str | Path) -> dict:
+    path = Path(config_path).expanduser().resolve()
+    cache_key = str(path)
+    if cache_key in _llm_config_cache:
+        return _llm_config_cache[cache_key]
+    if not path.exists():
+        raise FileNotFoundError(f"LLM config not found: {path}")
+    with path.open("r", encoding="utf-8") as f:
+        cfg = json.load(f)
+    required = ["api_key", "base_url"]
+    missing = [k for k in required if not cfg.get(k)]
+    if missing:
+        raise ValueError(f"LLM config missing required fields {missing}: {path}")
+    _llm_config_cache[cache_key] = cfg
+    return cfg
+
+
+def _current_openai_kwargs() -> tuple[dict, str]:
+    override = _agent_llm_override.get()
+    if override:
+        kwargs = {"api_key": override.get("api_key")}
+        if override.get("base_url"):
+            kwargs["base_url"] = override.get("base_url")
+        return kwargs, f"agent_config:{override.get('config_path', 'unknown')}"
+    kwargs = {"api_key": os.environ.get("OPENAI_API_KEY")}
+    if os.environ.get("OPENAI_BASE_URL"):
+        kwargs["base_url"] = os.environ.get("OPENAI_BASE_URL")
+    return kwargs, "global_env"
+
+
+def get_openai_config_source() -> str:
+    _, source = _current_openai_kwargs()
+    return source
 
 def get_openai_client():
     global _openai_client
-    if _openai_client is None:
-        from openai import OpenAI
-        kwargs = {"api_key": os.environ.get("OPENAI_API_KEY")}
-        if os.environ.get("OPENAI_BASE_URL"):
-            kwargs["base_url"] = os.environ.get("OPENAI_BASE_URL")
-        _openai_client = OpenAI(**kwargs)
+    from openai import OpenAI
+    kwargs, source = _current_openai_kwargs()
+    cache_key = (kwargs.get("api_key"), kwargs.get("base_url"))
+    if cache_key not in _openai_client_cache:
+        _openai_client_cache[cache_key] = OpenAI(**kwargs)
+    _openai_client = _openai_client_cache[cache_key]
     return _openai_client
+
+
+@contextmanager
+def use_agent_llm_config(config_path: str | Path):
+    cfg = _load_llm_config(config_path)
+    override = {
+        "api_key": cfg.get("api_key"),
+        "base_url": cfg.get("base_url"),
+        "model_name": cfg.get("model_name"),
+        "trust_env": cfg.get("trust_env", False),
+        "config_path": str(Path(config_path).expanduser().resolve()),
+    }
+    token = _agent_llm_override.set(override)
+    model_name = override.get("model_name")
+    if model_name:
+        print(f"[agent-llm] using {override['config_path']} model={model_name}")
+    else:
+        print(f"[agent-llm] using {override['config_path']} model=<unset>")
+    try:
+        yield override
+    finally:
+        _agent_llm_override.reset(token)
+
+
+def with_agent_llm_config(config_path: str | Path):
+    def _decorator(func):
+        if asyncio.iscoroutinefunction(func):
+            @functools.wraps(func)
+            async def _async_wrapped(*args, **kwargs):
+                with use_agent_llm_config(config_path):
+                    return await func(*args, **kwargs)
+            return _async_wrapped
+        @functools.wraps(func)
+        def _wrapped(*args, **kwargs):
+            with use_agent_llm_config(config_path):
+                return func(*args, **kwargs)
+        return _wrapped
+    return _decorator
 
 def get_openai_embedding(texts, model="text-embedding-ada-002"):
    client = get_openai_client()
@@ -38,6 +119,8 @@ def set_gemini_key():
     genai.configure(api_key=os.environ['GOOGLE_API_KEY'])
 
 def set_openai_key():
+    source = get_openai_config_source()
+    print(f"[openai-client] init source={source}")
     get_openai_client()
 
 
@@ -114,16 +197,6 @@ def run_chatgpt(query, num_gen=1, num_tokens_request=1000,
     while completion is None:
         wait_time = wait_time + 2
         try:
-            # if model == 'chatgpt':
-            #     messages = [{"role": "system", "content": query}]
-            #     completion = client.chat.completions.create(
-            #         model="gpt-3.5-turbo",
-            #         temperature=temperature,
-            #         max_tokens=num_tokens_request,
-            #         n=num_gen,
-            #         messages=messages
-            #     )
-            # else:
             messages = [{"role": "user", "content": query}]
             completion = client.chat.completions.create(
                 model=model,

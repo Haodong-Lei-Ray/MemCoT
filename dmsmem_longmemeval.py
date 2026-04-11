@@ -95,26 +95,21 @@ def _get_chunk_id_to_doc_id(working_dir: str) -> dict:
     }
 
 
-async def _lightrag_retrieve_async(query: str, conv_id: str, top_k: int = RAG_TOP_K,
-                                   working_dir: str = None,
-                                   rag=None) -> list[dict]:
-    """LightRAG aquery_data 检索。返回 [{dia_id, date_time, context, score, from_query}, ...]
-    如果传入 rag 实例则复用，否则临时创建。
-    """
-    if rag is None:
-        raise ValueError("rag instance must be provided")
-    if working_dir is None:
-        raise ValueError("working_dir must be provided")
+def _lightrag_retrieve_sync(query: str, conv_id: str, top_k: int = RAG_TOP_K,
+                            working_dir: str = None, rag=None) -> list[dict]:
+    """同步版 LightRAG 检索（关键修复点）"""
+    if rag is None or working_dir is None:
+        raise ValueError("rag instance and working_dir must be provided")
 
     from lightrag import QueryParam
     param = QueryParam(mode="hybrid", top_k=top_k, chunk_top_k=top_k)
-    result = await rag.aquery_data(query, param)
+
+    result = rag.query_data(query, param)   # ← 改成同步调用！
 
     if result.get("status") != "success":
-        raise ValueError(f"status != success conv_id: {conv_id} ")
+        raise ValueError(f"LightRAG status != success for conv_id: {conv_id}")
     if not result.get("data", {}).get("chunks"):
-        # rag query param 保存下来，然后debug
-        raise ValueError(f"not result.get(data, ).get(chunks) conv_id: {conv_id} ")
+        raise ValueError(f"LightRAG returned no chunks for conv_id: {conv_id}")
 
     chunks = result["data"]["chunks"]
     chunk_id_to_doc = _get_chunk_id_to_doc_id(working_dir)
@@ -122,14 +117,11 @@ async def _lightrag_retrieve_async(query: str, conv_id: str, top_k: int = RAG_TO
     for i, c in enumerate(chunks):
         chunk_id = c.get("chunk_id", "")
         dia_id = chunk_id_to_doc.get(chunk_id, chunk_id)
-        date_time = c.get("file_path", "")
-        context = c.get("content", "")
-        score = 1.0 - (i * 0.01)
         results.append({
             "dia_id": dia_id,
-            "date_time": date_time,
-            "context": context,
-            "score": float(score),
+            "date_time": c.get("file_path", ""),
+            "context": c.get("content", ""),
+            "score": float(1.0 - i * 0.01),
             "from_query": query,
         })
     return results
@@ -287,17 +279,19 @@ def lightrag_retrieve_multi(
     return deduped, result_list
 
 
-async def lightrag_retrieve_multi_async(
+def lightrag_retrieve_multi(
     queries: list[str], conv_id: str, top_k: int = RAG_TOP_K,
     working_dir: str = None, rag=None,
 ) -> tuple[list[dict], list[dict]]:
-    """Async version: directly await _lightrag_retrieve_async without event-loop bridging."""
+    """同步多 query 检索 + 去重"""
     all_results = []
     result_list = []
     for q in queries:
-        res = await _lightrag_retrieve_async(q, conv_id, top_k, working_dir, rag=rag)
+        res = _lightrag_retrieve_sync(q, conv_id, top_k, working_dir, rag)
         all_results.extend(res)
         result_list.append({"query": q, "res": res})
+
+    # 去重
     seen = set()
     deduped = []
     for r in all_results:
@@ -391,16 +385,20 @@ def rag_retrieve_multi(
     raise ValueError(f"rag_type must be one of {RAG_TYPE_CHOICES}, got {rag_type!r}")
 
 
-async def rag_retrieve_multi_async(
-    queries: list[str], conv_id: str, top_k: int = RAG_TOP_K,
-    rag_type: str = RAG_TYPE_LIGHTRAG, working_dir: str = None, rag=None,
+def rag_retrieve_multi(
+    queries: list[str],
+    conv_id: str,
+    top_k: int = RAG_TOP_K,
+    rag_type: str = RAG_TYPE_LIGHTRAG,
+    working_dir: str = None,
+    rag=None,
 ) -> tuple[list[dict], list[dict]]:
-    """Async version of rag_retrieve_multi."""
+    """统一同步检索入口"""
     if rag_type == RAG_TYPE_NAIVE:
-        return await asyncio.to_thread(naiverag_retrieve_multi, queries, conv_id, top_k)
+        return naiverag_retrieve_multi(queries, conv_id, top_k)
     if rag_type == RAG_TYPE_LIGHTRAG:
-        return await lightrag_retrieve_multi_async(queries, conv_id, top_k, working_dir, rag=rag)
-    raise ValueError(f"rag_type must be one of {RAG_TYPE_CHOICES}, got {rag_type!r}")
+        return lightrag_retrieve_multi(queries, conv_id, top_k, working_dir, rag)
+    raise ValueError(f"rag_type must be one of {RAG_TYPE_CHOICES}")
 
 
 def _rewrite_first_person_to_user(text: str) -> str:
@@ -416,7 +414,7 @@ def _rewrite_first_person_to_user(text: str) -> str:
     return t
 
 
-async def run_react_lightrag_async(
+def run_react_lightrag_sync(
     query: str,
     conv_id: str,
     category: int,
@@ -446,6 +444,8 @@ async def run_react_lightrag_async(
     haystack_session_ids = None
     if benchmark == "longmemeval":
         query = _rewrite_first_person_to_user(query)
+        question_date = full_conv['question_date']
+        query = f"Today is {question_date}. {query}"
         haystack_session_ids = _get_haystack_session_ids(conv_id)
     root_query = query
     query_queue = [query]
@@ -465,7 +465,7 @@ async def run_react_lightrag_async(
         print(f"Query_queue: {query_queue}")
         assert len(query_queue) != 0
         # ─── Act: RAG 检索（naive 或 lightrag）query queue 中所有 query ───
-        rag_results, rag_result_list = await rag_retrieve_multi_async(
+        rag_results, rag_result_list = rag_retrieve_multi(
             query_queue, conv_id, top_k=rag_top_k, rag_type=rag_type,
             working_dir=working_dir, rag=rag,
         )
@@ -483,8 +483,7 @@ async def run_react_lightrag_async(
         rag_record = []
         # ─── RAG View agent: 观察 rag_results，选出 useful_dia_ids，写 report ───
         if agent_flag[0]:
-            rag_view_result = await asyncio.to_thread(
-                rag_view_agent_with_cfg,
+            rag_view_result = rag_view_agent_with_cfg(
                 root_query=root_query,
                 query_queue=query_queue,
                 rag_results=rag_results,
@@ -510,19 +509,18 @@ async def run_react_lightrag_async(
         # ─── middle View agent: ───
         if agent_flag[1] and len(temp_useful_rag) > 0:
             K = middle_scale
-            middle_view_result = await asyncio.to_thread(
-                middle_view_agent_with_cfg,
+            middle_view_result = middle_view_agent_with_cfg(
                 root_query=root_query,
                 query_queue=query_queue,
                 temp_useful_rag=temp_useful_rag,
                 known_info_rag=short_memory,
                 model=model,
                 conv_id=conv_id,
-                K=K,
+                K=middle_scale,
                 temperature=0.0,
                 benchmark=benchmark,
                 haystack_session_ids=haystack_session_ids,
-                full_conv = full_conv
+                full_conv=full_conv
             )
             middle_dia = middle_view_result.get("useful_evidence", [])
             middle_view_thinking = middle_view_result.get("thinking", "")
@@ -541,8 +539,7 @@ async def run_react_lightrag_async(
 
         # ─── visual_ocr_agent: ───
         if agent_flag[2] and benchmark != 'longmemeval':
-            visual_ocr_result = await asyncio.to_thread(
-                visual_ocr_agent_with_cfg,
+            visual_ocr_result = visual_ocr_agent_with_cfg(
                 root_query=root_query,
                 query_queue=query_queue,
                 temp_useful_rag=temp_useful_rag,
@@ -585,11 +582,12 @@ async def run_react_lightrag_async(
         }
 
         # ─── Observation ───给出是否能回答的结果
-        obs = await asyncio.to_thread(
-            observation_agent_with_cfg, query, temp_useful_rag,
-            short_memory, model, fail_queue_trajectory=fail_queue_trajectory,
-            temperature=0.0, conv_memory=conv_memory, benchmark=benchmark,
-            haystack_session_ids=haystack_session_ids)
+        obs = observation_agent_with_cfg(
+            query, temp_useful_rag, short_memory, model,
+            fail_queue_trajectory=fail_queue_trajectory,
+            temperature=0.0, conv_memory=[], benchmark=benchmark,
+            haystack_session_ids=haystack_session_ids
+        )
         useful_evidence = obs.get("useful_evidence", [])#TODO:这里可以做个知识更新
         new_queries = obs.get("new_queries", [])
         action = obs.get("action", [])
@@ -599,10 +597,6 @@ async def run_react_lightrag_async(
                 if i['dia_id'] in useful_evidence and i['dia_id'] not in short_memory_dia_ids:#如果临时记忆有的，但是短期记忆没有的
                     short_memory.append(i)
                     fail_query_flag = False
-        # else:#减少new short memory
-        #     for i in short_memory:#遍历短期记忆
-        #         if i['dia_id'] not in useful_evidence:
-        #             short_memory.remove(i)
         print(f"No.{step}:")
         if fail_query_flag:
             fail_queue_trajectory.append({"last_action":last_action,"query_queue":query_queue,"rag_view_report":rag_view_missing_information})#TODO:判断真不能靠这个判断obs agent来判断
@@ -630,8 +624,7 @@ async def run_react_lightrag_async(
         # ─── 机械判断 ───
         if obs["can_answer"] or step == max_step - 1:
             short_memory_dia_ids = [m.get("dia_id", "") for m in short_memory]
-            ans = await asyncio.to_thread(
-                answer_agent_with_cfg, query, short_memory, model=model,
+            ans = answer_agent_with_cfg(query, short_memory, model=model,
                 obs_report=obs_thinking, additional_information=additional_information,
                 benchmark=benchmark, haystack_session_ids=haystack_session_ids)
             if ans["answer"] != '':
@@ -656,8 +649,7 @@ async def run_react_lightrag_async(
         assert len(new_queries) != 0
         query_queue = new_queries
     short_memory_dia_ids = [m.get("dia_id", "") for m in short_memory]
-    conv_view_result = await asyncio.to_thread(
-        conv_answer_agent_with_cfg,
+    conv_view_result = conv_answer_agent_with_cfg(
         root_query=root_query,
         model=model,
         full_conv=full_conv,
@@ -666,12 +658,14 @@ async def run_react_lightrag_async(
     )
     conv_view_answer = conv_view_result.get("answer", "")
     conv_view_thinking = conv_view_result.get("thinking", "")
+    if benchmark == 'longmemeval':
+        conv_view_answer = conv_view_thinking+" Answer is: "+ conv_view_answer
     ans = {
             "answer": conv_view_answer,
-            "thinking": conv_view_thinking
+            "report": conv_view_thinking
         }
     answer = ans["answer"]
-    answer_thinking = ans["thinking"]
+    answer_thinking = ans["report"]
 
     result = {
         "answer": answer,
@@ -686,11 +680,6 @@ async def run_react_lightrag_async(
     print(f"Answer: {answer}")
     return result
 
-    # else:
-    #     ans = guess_answer_agent(query, short_memory, model=model, obs_report=obs_thinking,
-            # additional_information=additional_information)
-
-
 def run_react_lightrag(
     query: str, conv_id: str, category: int, model: str = DEFAULT_MODEL,
     output_dir: Optional[str] = None, max_step: int = MAX_LOOP_STEP,
@@ -701,14 +690,14 @@ def run_react_lightrag(
 ) -> dict:
     """Sync wrapper — delegates to run_react_lightrag_async via event-loop bridge."""
     loop = _get_rag_event_loop()
-    return loop.run_until_complete(run_react_lightrag_async(
+    return run_react_lightrag_sync(   # ← 新增一个 sync 函数，或者直接把下面内容粘贴
         query=query, conv_id=conv_id, category=category, model=model,
         output_dir=output_dir, max_step=max_step, rag_top_k=rag_top_k,
         rag_type=rag_type, working_dir=working_dir,
         agent_flag_str=agent_flag_str, middle_scale=middle_scale,
         rag=rag, full_conv=full_conv, img_retriever=img_retriever,
         benchmark=benchmark,
-    ))
+    )
 
 
 def _save_json(data, path: str):

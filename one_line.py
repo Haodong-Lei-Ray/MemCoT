@@ -30,9 +30,9 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-PROJECT_ROOT = Path(__file__).parent.parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(PROJECT_ROOT))
-LIGHTRAG_PATH = PROJECT_ROOT / "module_unit" / "LightRAG"
+LIGHTRAG_PATH = PROJECT_ROOT / "mem" / "LightRAG"
 sys.path.insert(0, str(LIGHTRAG_PATH))
 
 try:
@@ -42,7 +42,7 @@ except ImportError:
     pass
 
 # Agent 模块：rag_view, full_view, answer, thought, observation
-from module_version.version2.agent.agent import (
+from agent.agent import (
     rag_view_agent,
     middle_view_agent,
     answer_agent,
@@ -59,13 +59,13 @@ from module_version.version2.agent.agent import (
 DEFAULT_LIGHTRAG_WORKING_BASE = "/mnt/petrelfs/leihaodong/ICML/exp/memory/lightrag/rag_storage"
 NAIVERAG_BASE = "/mnt/petrelfs/leihaodong/ICML/exp/memory/naiverag"
 DEFAULT_IMG_INDEX_BASE = "/mnt/petrelfs/leihaodong/ICML/exp/memory/img_mem/vit_rag"
-DATA_PATH = PROJECT_ROOT / "data" / "locomo10.json"
+DATA_PATH = PROJECT_ROOT / "benchmark" / "locomo" / "data" / "locomo10.json"
 DEFAULT_MODEL = "Qwen/Qwen2.5-14B-Instruct"
 DEFAULT_OUTPUT_DIR = "/mnt/petrelfs/leihaodong/ICML/locomo/module_version/version2/eval_output"
 MAX_LOOP_STEP = 10
 RAG_TOP_K = 5
 FULL_VIEW_SESS_NUM = 1  # Full View agent 每次选择的 session 数量
-DEFAULT_AGENT_FLAG = "10000"
+DEFAULT_AGENT_FLAG = "11000"
 
 
 
@@ -272,7 +272,7 @@ def lightrag_retrieve_multi(
 
 
 def naiverag_retrieve_multi(
-    queries: list[str], conv_id: str, top_k: int = RAG_TOP_K
+    queries: list[str], conv_id: str, top_k: int = RAG_TOP_K, working_dir: str=None
 ) -> tuple[list[dict], list[dict]]:
     """
     Naive RAG: 从 naiverag 目录加载 pkl，向量检索。返回 (deduped, result_list)，格式与 lightrag_retrieve_multi 一致。
@@ -281,9 +281,9 @@ def naiverag_retrieve_multi(
     import numpy as np
     from global_methods import get_openai_embedding
 
+    NAIVERAG_BASE = os.path.dirname(working_dir)
     pkl_path = os.path.join(NAIVERAG_BASE, f"locomo10_dialog_{conv_id}.pkl")
-    if not os.path.exists(pkl_path):
-        return [], [{"query": q, "res": []} for q in queries]
+    print(f"[rag workdir] {pkl_path}")
 
     with open(pkl_path, "rb") as f:
         db = pickle.load(f)
@@ -298,15 +298,17 @@ def naiverag_retrieve_multi(
 
     all_results = []
     result_list = []
+    if isinstance(queries, str):
+        queries = [queries]
     for q in queries:
         query_emb = get_openai_embedding([q])
         scores = np.dot(query_emb, np.array(embeddings).T).flatten()
         top_indices = np.argsort(scores)[::-1][:top_k]
         res = [
             {
-                "dia_id": dia_ids[idx] if idx < len(dia_ids) else "",
-                "date_time": date_times[idx] if idx < len(date_times) else "",
-                "context": contexts[idx] if idx < len(contexts) else "",
+                "dia_id": dia_ids[idx],
+                "date_time": date_times[idx],
+                "context": contexts[idx],
                 "score": float(scores[idx]),
                 "from_query": q,
             }
@@ -348,7 +350,7 @@ def rag_retrieve_multi(
 ) -> tuple[list[dict], list[dict]]:
     """根据 rag_type 选择 NaiveRAG 或 LightRAG 检索。返回 (deduped, result_list)。"""
     if rag_type == RAG_TYPE_NAIVE:
-        return naiverag_retrieve_multi(queries, conv_id, top_k)
+        return naiverag_retrieve_multi(queries, conv_id, top_k, working_dir)
     if rag_type == RAG_TYPE_LIGHTRAG:
         return lightrag_retrieve_multi(queries, conv_id, top_k, working_dir, rag=rag)
     raise ValueError(f"rag_type must be one of {RAG_TYPE_CHOICES}, got {rag_type!r}")
@@ -577,7 +579,7 @@ def run_react_lightrag(
             ans = answer_agent(query, short_memory, model=model, obs_report=obs_thinking, additional_information=additional_information, benchmark=benchmark, haystack_session_ids=haystack_session_ids)
             if ans["answer"] != '':
                 answer = ans["answer"]
-                answer_thinking = ans["report"]
+                answer_thinking = ans["thinking"]
             else:
                 continue
             if answer in WRONG_LIST:
@@ -653,7 +655,7 @@ if __name__ == "__main__":
         help=f"RAG 类型: naive=向量检索(pkl@naiverag), lightrag=LightRAG 知识图谱 (default: {RAG_TYPE_LIGHTRAG})",
     )
     parser.add_argument(
-        "--lightrag-base",
+        "--rag-base",
         default=DEFAULT_LIGHTRAG_WORKING_BASE,
         help=f"LightRAG 索引根目录 (default: {DEFAULT_LIGHTRAG_WORKING_BASE})",
     )
@@ -687,7 +689,7 @@ if __name__ == "__main__":
     # 构建 working_dir
     conv_id = args.conv
     workspace = _conv_id_to_workspace(conv_id)
-    working_dir = os.path.join(args.lightrag_base, workspace)
+    working_dir = os.path.join(args.rag_base, workspace)
     print(f"working_dir: {working_dir}")
 
     # 载入 LightRAG（仅初始化一次，后续检索复用同一实例）

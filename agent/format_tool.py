@@ -124,3 +124,21 @@ def fix_escape_chars(text: str) -> str:
     for old, new in replacements:
         text = text.replace(old, new)
     return text
+
+
+from typing import Any
+def _build_full_conv_context_from_entry(entry: dict[str, Any]) -> str:
+    """Build full conversation context from one LongMemEval entry."""
+    dates = entry.get("haystack_dates", [])
+    sessions = entry.get("haystack_sessions", [])
+    blocks: list[str] = []
+    for i, (date_str, sess) in enumerate(zip(dates, sessions), start=1):
+        blocks.append(f"### Session {i}:")
+        blocks.append(f"Session Date: {date_str}")
+        blocks.append("Session Content:")
+        for turn in sess:
+            role = str(turn.get("role", "user"))
+            content = str(turn.get("content", ""))
+            blocks.append(f"{role}: {content}")
+        blocks.append("")
+    return "\n".join(blocks).strip()

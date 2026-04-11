@@ -3,7 +3,7 @@ import numpy as np
 
 def dcg(relevances, k):
     """Discounted Cumulative Gain at k."""
-    relevances = np.asfarray(relevances)[:k]
+    relevances = np.asarray(relevances, dtype=float)[:k]
     if relevances.size:
         return relevances[0] + np.sum(relevances[1:] / np.log2(np.arange(2, relevances.size + 1)))
     return 0.

@@ -15,7 +15,7 @@ Analysis Rules:
 
 Output a JSON object:
 1. thinking: A brief explanation covering, including Why specific IDs were selected (mention the matching time or description).
-3. missing_information: What specific missing_information is still missing. You can anlyze the disadvantage of search_query.
+3. missing_information: What specific missing_information is still missing. You can analyze the disadvantage of search_query.
 4. useful_ids: List of indices (e.g. [1, 2]). Include IDs that contain matching timeframes or descriptions of the target, even if the specific name is missing.
 
 Output ONLY valid JSON."""
@@ -35,7 +35,7 @@ Analysis Rules:
 
 Output a JSON object:
 1. thinking: A brief explanation covering, including Why specific IDs were selected (mention the matching time or description).
-3. missing_information: What specific missing_information is still missing. You can anlyze the disadvantage of search_query.
+3. missing_information: What specific missing_information is still missing. You can analyze the disadvantage of search_query.
 4. useful_ids: List of indices (e.g. [1, 2]). Include IDs that contain matching timeframes or descriptions of the target, even if the specific name is missing.
 
 Output ONLY valid JSON."""
@@ -50,7 +50,7 @@ def middle_view_agent_prompt(query_information, known_information,middle_context
 {known_information}
 {middle_context_text}
 
-Task: Identify useful information to answer the query".
+Task: Identify useful information to answer the query.
 
 Analysis Rules:
 1. **Temporal Check**: If the query mentions a specific time or duration, ANY result mentioning a matching time/duration is HIGHLY relevant.
@@ -61,7 +61,7 @@ Output a JSON object:
 1. thinking: Your reasoning about what useful information these context windows contain.
 2. thinking_choice:  Why specific IDs were selected (mention the matching time or description); 
 3. missing_information: What specific information is still missing to fully answer the query.
-4. useful_ids: useful_ids: List of 0-based indices (e.g. [0, 2]) from the context windows that are useful.
+4. useful_ids: List of 0-based indices (e.g. [0, 2]) from the context windows that are useful.
 
 Output ONLY valid JSON."""
     elif benchmark == 'longmemeval':
@@ -81,7 +81,7 @@ Output a JSON object:
 1. thinking: Your reasoning about what useful information these context windows contain.
 2. thinking_choice:  Why specific IDs were selected (mention the matching time or description); 
 3. missing_information: What specific information is still missing to fully answer the query.
-4. useful_ids: useful_ids: List of 0-based indices (e.g. [0, 2]) from the context windows that are useful.
+4. useful_ids: List of 0-based indices (e.g. [0, 2]) from the context windows that are useful.
 
 Output ONLY valid JSON."""
     else:
@@ -157,7 +157,7 @@ Output a JSON object:
     2. Delete: If Root Query Q = [Q_A,Q_B] and Short Memory include Q_A, focus on Q_B and New query Q'=Q-Q_A.
     Do not let new_queries as same as and Fail query.
     You can try more type action to avoid to me the same fail query.
-5.new_queries: If can_answer is false, suggest {queries_num} new queries that are more likely to retrieve the missing information. These should be focused and based on the gaps identified in the report.
+5.new_queries: If can_answer is false, suggest {queries_num} new queries that are more likely to retrieve the missing information.
 Output a JSON object exactly following this structure:
 {{
     "thinking": ...,
@@ -191,21 +191,11 @@ Output a JSON object exactly following this structure:
 }}
 """
     elif benchmark == 'longmemeval':
-        prompt =f"""
-CRITICAL RULES:
-1. Ultra-Concise Answer: The "answer" MUST be an extremely short entity, number, or absolute date.
-2. For yes/no questions (Would/Did/Is/Does...?), answer yes or no, or the given choice. For how many, answer english word, like two,three,twice.
-{additional_information_text}
+        prompt =f"""{additional_information_text}
 {short_memory_text}
 Query: {query}
-Output ONLY valid JSON.
-1. thinking: Thinking hard and more for the answer. Calculated absolute date from session context if possible. Extracted target entity.
-2. answer: Write the answer in the form of a short phrase. Answer with exact words from the context whenever possible. Cannot be empty. You can not say"No information available".
-Output a JSON object exactly following this structure:
-{{
-    "thinking": "...",
-    "answer": "..."
-}}
+1. thinking: Thinking hard and more for the answer. You need to explain for all the short memory. If you design math problems, please write the calculation steps in the "thinking" field.
+2. answer: Answer the query. Cannot be empty. You can not say"No information available".
 """
     else:
         raise ValueError(f"Unsupported benchmark: {benchmark}")
@@ -213,10 +203,38 @@ Output a JSON object exactly following this structure:
 
 
 from task_eval.gpt_utils import QA_PROMPT, QA_PROMPT_CAT_5, CONV_START_PROMPT
+from .format_tool import _build_full_conv_context_from_entry
+from benchmark.longmemeval.src.generation.run_generation import prepare_prompt
+import tiktoken
+
+TOKENIZER = tiktoken.get_encoding("cl100k_base")
 
 def conv_answer_agent_prompt(full_conv, query, benchmark):
     if benchmark == 'locomo':
-        prompt = full_conv + "\n\n" + QA_PROMPT.format(query)
+        full_conv_text = full_conv
+        prompt = full_conv_text + "\n\n" + QA_PROMPT.format(query)
+    elif benchmark == 'longmemeval':
+        if not isinstance(full_conv, dict):
+            raise ValueError("longmemeval requires full_conv as entry dict")
+        if "question" not in full_conv:
+            raise ValueError("longmemeval full_conv missing required field: question")
+        if "question_date" not in full_conv:
+            raise ValueError("longmemeval full_conv missing required field: question_date")
+        prompt = prepare_prompt(
+            entry=full_conv,
+            retriever_type="orig-session",
+            topk_context=len(full_conv.get("haystack_sessions", [])),
+            useronly=False,
+            history_format="nl",
+            cot=False,
+            tokenizer=TOKENIZER,
+            tokenizer_backend="openai",
+            max_retrieval_length=1000000,
+            merge_key_expansion_into_value="none",
+            con=False,
+            con_client=None,
+            con_model=None,
+        )
     else:
         raise ValueError(f"Unsupported benchmark: {benchmark}")
     return prompt

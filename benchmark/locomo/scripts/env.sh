@@ -16,9 +16,10 @@ SESS_SUMM_OUTPUT_FILE=locomo10_session_summary.json
 PROMPT_DIR=./prompt_examples
 
 # OpenAI API Key
-# export OPENAI_API_KEY="sk-a3iAhoJ4w30ykivaD6PSn97QdRoPsIRQ2zbNawJBYPtPyMLX"
 # export OPENAI_API_KEY="sk-SL2cgXG9HXPxJ2KRAQFBrmbcd2odqU5hXszr0EkwCQNfx6Xr"
 # export OPENAI_API_KEY="sk-qyXyGlik3PnDddF68mOXbaA3OqdguG7PAkD8sUiwJHYfv44U"
+# export OPENAI_API_KEY="sk-M9LyabPjGlgnNyj68nuGXmCkAkJOD25Fsmg6sAMQB8WbQVh9"
+export OPENAI_API_KEY="sk-HggMX7x2NK82VQJc8WpPbijnFJjHnQ9dJjPQHJ95pOv2YcFp"
 export OPENAI_BASE_URL="http://35.220.164.252:3888/v1"     # 或其他地址
 
 # Google API Key

@@ -6,10 +6,12 @@ import sys
 try:
     from .. import PROJECT_ROOT
 except ImportError:
-    PROJECT_ROOT = Path(__file__).parent.parent.parent.parent  # agent -> version2 -> module_version -> locomo
+    # Local standalone layout: DMSMem/agent/agent.py -> PROJECT_ROOT=DMSMem
+    PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 from global_methods import run_chatgpt
-from task_eval.gpt_utils import QA_PROMPT, QA_PROMPT_CAT_5, CONV_START_PROMPT
+# Local layout fallback: DMSMem/benchmark/locomo/task_eval
+from benchmark.locomo.task_eval.gpt_utils import QA_PROMPT, QA_PROMPT_CAT_5, CONV_START_PROMPT
 import json
 
 import re
@@ -20,8 +22,8 @@ from .prompt import rag_view_agent_prompt, \
     observation_agent_prompt, answer_agent_prompt, conv_answer_agent_prompt
 # cache for conversation data
 _conversation_cache: dict = {}
-DATA_PATH = PROJECT_ROOT / "data" / "locomo10.json"
-CONV_DIR = PROJECT_ROOT / "data" / "con"
+DATA_PATH = PROJECT_ROOT / "benchmark" / "locomo" / "data" / "locomo10.json"
+CONV_DIR = PROJECT_ROOT / "benchmark" / "locomo" / "data" / "con"
 IMG_PDF_BASE = PROJECT_ROOT / "data" / "img_pdf_con"
 IMG_PDF_BASE = PROJECT_ROOT / "data" / "img_pdf_minor"
 
@@ -30,6 +32,23 @@ DEFAULT_MULTIMODAL_MODEL = "gpt-4o-mini"
 
 # LongMemEval 时间格式："2023/05/20 (Sat) 02:21"（参考 LOCOMO_CONVERSION_FEASIBILITY.md）
 _LONGMEMEVAL_DATE_FMT = "%Y/%m/%d (%a) %H:%M"
+
+
+def _estimate_input_tokens(text: str, model: str) -> int:
+    """Estimate input token count for logging."""
+    if not text:
+        return 0
+    try:
+        import tiktoken
+
+        try:
+            enc = tiktoken.encoding_for_model(model)
+        except KeyError:
+            enc = tiktoken.get_encoding("cl100k_base")
+        return len(enc.encode(text))
+    except Exception:
+        # Fallback heuristic when tokenizer lib/model mapping is unavailable.
+        return max(1, len(text) // 4)
 
 
 def _parse_longmemeval_date(s: str):
@@ -51,8 +70,8 @@ def _parse_longmemeval_dia_id(dia_id: str, haystack_session_ids: list[str] | Non
       - {sess_idx}_{turn_id} 或 {sess_idx}_{turn_id}_c{chunk_id}  （当 haystack_session_ids 有重复时 buildrag 使用）
     返回 (在 haystack_session_ids 中的位置, turn_id, chunk_id)。chunk_id 不存在则为 0。
     """
-    if not dia_id or not haystack_session_ids:
-        return (0, 0, 0)
+    if not dia_id:
+        raise ValueError(f"Failed to dia_id. {dia_id}")
     # 格式 {si}_{turn}[_c{chunk}]：当 sess_id 重复时 buildrag 生成
     if "_c" in dia_id:
         parts = dia_id.rsplit("_c", 1)
@@ -68,6 +87,8 @@ def _parse_longmemeval_dia_id(dia_id: str, haystack_session_ids: list[str] | Non
             a, b = dia_id.split("_", 1)
             if a.isdigit() and b.isdigit():
                 return (int(a), int(b), 0)
+    if not haystack_session_ids:
+        raise ValueError(f"Failed to dia_id. {haystack_session_ids}")
     # 格式 {sess_id}_{turn}[_c{chunk}]
     for i, sid in enumerate(haystack_session_ids):
         if dia_id == sid:
@@ -83,7 +104,7 @@ def _parse_longmemeval_dia_id(dia_id: str, haystack_session_ids: list[str] | Non
             if suffix.isdigit():
                 return (i, int(suffix), 0)
             return (i, 0, 0)
-    return (0, 0, 0)
+    raise ValueError(f"Failed to dia_id. {dia_id}")
 
 
 def get_sort_key(
@@ -181,7 +202,8 @@ def _parse_json_from_llm(text: str) -> dict | None:
     try:
         return json.loads(json_str)
     except json.JSONDecodeError:
-        raise ValueError("Failed to parse JSON from LLM output.")
+        print(json_str)
+        raise ValueError(f"Failed to parse JSON from LLM output.")
         # 多种修复策略：未闭合数组、尾随逗号、括号配对
         # json_str = fix_unclosed_array_before_key(json_str)
         # json_str = remove_trailing_commas(json_str)
@@ -197,7 +219,7 @@ def rag_view_agent(
     model: str,
     temperature: int = 0,
     benchmark: str = "locomo",
-    haystack_session_ids: list[str] | None = None,
+    haystack_session_ids: list[str] | None = None
 ) -> dict:
     """
     RAG View agent: 观察 rag_results，选出 useful_dia_ids，并写 report。
@@ -230,6 +252,7 @@ def rag_view_agent(
     while True:
         try_step -= 1
         try:
+            print(f"[rag_view_agent] input_tokens={_estimate_input_tokens(prompt, model)}")
             resp = run_chatgpt(prompt, model=model, num_tokens_request=1024, temperature=temperature)
             out = _parse_json_from_llm(resp)
             break
@@ -303,6 +326,7 @@ def get_context_window4longmemeval(
     temp_useful_rag: list[dict],
     conv_id: str,
     haystack_session_ids: list[str],
+    full_conv: list[dict],
     K: int = 3,
 ) -> tuple[list[str], list[dict]]:
     """LongMemEval: 对每个 dia_id ({sess_id}_{turn}[_c{chunk}]) 取所在 session 上下 K 条对话。
@@ -310,11 +334,7 @@ def get_context_window4longmemeval(
     以 turn 为单位，在同一 session 内取命中 turn 前后各 K 个 turn 作为上下文窗口。
     返回 (context_blocks, rag_results)。
     """
-    if conv_id not in _conversation_cache:
-        conv_file = LONGMEMEVAL_DATASET_DIR / f"{conv_id}.json"
-        with open(conv_file, "r", encoding="utf-8") as f:
-            _conversation_cache[conv_id] = json.load(f)
-    entry = _conversation_cache[conv_id]
+    entry = full_conv
     all_sessions = entry.get("haystack_sessions", [])
     all_dates = entry.get("haystack_dates", [])
 
@@ -324,20 +344,29 @@ def get_context_window4longmemeval(
     for item in temp_useful_rag:
         dia_id = item.get("dia_id", "")
         sess_idx, turn_id, _chunk_id = _parse_longmemeval_dia_id(dia_id, haystack_session_ids)
-        if sess_idx >= len(all_sessions):
+        if sess_idx < 0 or sess_idx >= len(all_sessions):
             continue
         session = all_sessions[sess_idx]
+        if not isinstance(session, list) or len(session) == 0:
+            continue
         date_time = all_dates[sess_idx] if sess_idx < len(all_dates) else ""
 
-        # 以 turn 为单位取前后 K 个 turn（同一 session 内）
-        center = turn_id
-        start_t = max(0, center - K)
-        end_t = min(len(session), center + K + 1)
+        # dia_id 中 turn_id 约定为 1-based；窗口计算需转为 0-based
+        if turn_id <= 0:
+            continue
+        center_idx = min(max(turn_id - 1, 0), len(session) - 1)
+        start_t = max(0, center_idx - K)
+        end_t = min(len(session), center_idx + K + 1)
 
         if sess_idx not in sessions:
+            sess_id = (
+                haystack_session_ids[sess_idx]
+                if sess_idx < len(haystack_session_ids)
+                else str(sess_idx)
+            )
             sessions[sess_idx] = {
                 "date_time": date_time,
-                "sess_id": haystack_session_ids[sess_idx],
+                "sess_id": sess_id,
                 "turns": {},
             }
         turn_map = sessions[sess_idx]["turns"]
@@ -358,7 +387,7 @@ def get_context_window4longmemeval(
             role = t.get("role", "user")
             content = str(t.get("content", "")).strip()
             turn_dia_id = f"{sess_id}_{ti + 1}"  # 1-based，与 buildrag 一致
-            lines.append(f'{idx_i}: {role}: "{content}')
+            lines.append(f'{idx_i}: {role}: "{content}"')
             rag_results.append({
                 "dia_id": turn_dia_id,
                 "date_time": date_time,
@@ -381,6 +410,7 @@ def middle_view_agent(
     temperature: float = 0.0,
     benchmark: str = "locomo",
     haystack_session_ids: list[str] | None = None,
+    full_conv = None
 ) -> dict:
     """
     Middle View agent: 对 temp_useful_rag 中每个 dia_id，取其所在 session 中上下 K 条对话，
@@ -391,7 +421,7 @@ def middle_view_agent(
         context_blocks, rag_results = get_context_window4locomo(temp_useful_rag, conv_id, K)
     elif benchmark == "longmemeval":
         context_blocks, rag_results = get_context_window4longmemeval(
-            temp_useful_rag, conv_id, haystack_session_ids or [], K,
+            temp_useful_rag, conv_id, haystack_session_ids or [], full_conv=full_conv, K=K
         )
     else:
         raise ValueError(f"Invalid benchmark: {benchmark}")
@@ -409,6 +439,7 @@ def middle_view_agent(
     known_information = f'Known information: {known_info_text}' if known_info_text else ''
 
     prompt = middle_view_agent_prompt(query_information, known_information,middle_context_text,benchmark)
+    print(f"[middle_view_agent] input_tokens={_estimate_input_tokens(prompt, model)}")
     resp = run_chatgpt(prompt, model=model, num_tokens_request=1024, temperature=temperature)
     out = _parse_json_from_llm(resp)
     num_ids = out.get("useful_ids", [])
@@ -431,8 +462,8 @@ def _build_full_conv_context(conv_id: str) -> str:
         if conv_file.exists():
             with open(conv_file, "r", encoding="utf-8") as f:
                 _conversation_cache[conv_id] = json.load(f)
-        # if conv_id not in _conversation_cache:
-        #     return ""
+        else:
+            raise FileNotFoundError(f"Conversation file not found: {conv_file}")
 
     conv = _conversation_cache[conv_id]
     speaker_a = conv.get("speaker_a", "Speaker A")
@@ -761,13 +792,16 @@ def observation_agent(query: str, temp_useful_rag: list[dict], short_memory: lis
     
 # 3. Nothing: Due to can_answer == True, so you do not to change
     repeat_flag = True
-    step = 3
+    step = 5
     while repeat_flag:
         step-=1
+        print(f"[observation_agent] input_tokens={_estimate_input_tokens(prompt, model)}")
         resp = run_chatgpt(prompt, model=model, num_tokens_request=1024, temperature=temperature)
         out = _parse_json_from_llm(resp)
         new_queries = out.get("new_queries")
         can_answer = bool(out.get("can_answer", False))
+        if can_answer and new_queries is None:
+            new_queries = "None"
         if new_queries is not None and isinstance(new_queries, list):
             new_queries = new_queries[:2]
         if isinstance(new_queries, str):
@@ -779,16 +813,21 @@ def observation_agent(query: str, temp_useful_rag: list[dict], short_memory: lis
             repeat_flag=False
         else:
             print(f"Repeat!!!!! {new_queries}")
-            prompt += f"\nYou just tried [Fail Query]:{new_queries}. DO NOT repeat it."
+            prompt += f"\nnIMPORTANT: You can just break query as the only one **keywords or some phases**."
         if step in [2,1]:
-            prompt += f"\nIMPORTANT: You have try {step} times this query. Change this new_queries. You can just make query as the key words. Like old query=(What/How/When...)+People+keyword1+keyword2. new_queries=[keyword1+keyword2]. The query could be declarative sentence."
+            prompt += f"\nIMPORTANT: Change this new_queries. You can just break query as the only one **words or a phase**. Like old query=(What/When...)+keyword1+keyword2. new_queries=[\"keyword1\"]. The query could be declarative sentence."
+        temperature += 0.5
+        temperature = max(temperature,1)
         if step <= 0:
             raise ValueError("Bug: new_queries == []")
     num_ids = out.get("useful_id", [])
     num_ids = [int(i) if isinstance(i, str) else i for i in num_ids]
     
     thinking = out.get("thinking")
-    useful_evidence = [dia_id_list[i] for i in num_ids] if len(num_ids) != 0 else []
+    if len(num_ids) >0 and max(num_ids) >= len(dia_id_list):
+        useful_evidence = dia_id_list
+    else:
+        useful_evidence = [dia_id_list[i] for i in num_ids] if len(num_ids) != 0 else []
     return {
         "thinking": thinking,
         "useful_evidence": useful_evidence,
@@ -809,18 +848,26 @@ def answer_agent(query: str, short_memory: list[dict], obs_report: str, model: s
     )
     short_memory,_ = _format_short_rag_for_prompt(rag_results_sort)
     short_memory_text = "Short Memory:\n"+"\n".join(short_memory) if short_memory else ''
-    additional_information_text = "3.IF you can not answer by Short Memory, just follow this thinking and answer: "+additional_information if additional_information else ''
-    
-    prompt = answer_agent_prompt(additional_information_text, short_memory_text, query,benchmark)
-    resp = run_chatgpt(prompt, model=model, num_tokens_request=512, temperature=0.0)
-    out = _parse_json_from_llm(resp)
-    answer = out.get("answer",'')
-    thinking = out.get("thinking",'')
-    assert thinking != '',f"resp = {resp}"
-    return {
-        "report": thinking,
-        "answer": answer,
-    }
+    # additional_information_text = "3.IF you can not answer by Short Memory, just follow this thinking and answer: "+additional_information if additional_information else ''
+    additional_information_text = ''
+    prompt = answer_agent_prompt(additional_information_text, short_memory_text, query, benchmark)
+    resp = run_chatgpt(prompt, model=model, num_tokens_request=1024, temperature=0.0)
+    if benchmark == 'locomo':
+        out = _parse_json_from_llm(resp)
+        answer = out.get("answer",'')
+        thinking = out.get("thinking",'')
+        if benchmark == 'longmemeval':
+            answer = thinking+" Answer is: "+ answer
+        assert thinking != '',f"resp = {resp}"
+        return {
+            "thinking": thinking,
+            "answer": answer,
+        }
+    else:
+        return {
+            "thinking": resp,
+            "answer": resp,
+        }
 
 def guess_answer_agent(query: str, short_memory: list[dict], obs_report: str, model: str, additional_information: str = "", benchmark: str = "locomo", haystack_session_ids: list[str] | None = None) -> dict:
     """
