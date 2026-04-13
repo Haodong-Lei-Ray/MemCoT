@@ -10,7 +10,6 @@ except ImportError:
 from benchmark.locomo.task_eval.gpt_utils import CONV_START_PROMPT
 
 _conversation_cache: dict = {}
-CONV_DIR = PROJECT_ROOT / "benchmark" / "locomo" / "data" / "con"
 LONGMEMEVAL_DATASET_DIR = PROJECT_ROOT / "benchmark" / "LongMemEval" / "dataset"
 LONGMEMEVAL_FORMAT_HISTORY = (
     PROJECT_ROOT / "module_unit" / "LongMemEval" / "src" / "generation" / "format_history.py"
@@ -52,10 +51,11 @@ def _build_full_conv_context_longmemeval(conv_id: str) -> str:
     return fmt_fn(item, max_sessions=None)
 
 # LOCOMO
-def _build_full_conv_context_locomo(conv_id: str) -> str:
+def _build_full_conv_context_locomo(conv_id: str, file_path: str | Path | None = None) -> str:
     """将 locomo 完整对话格式化为上下文文本。"""
+    base_path = Path(file_path)
     if conv_id not in _conversation_cache:
-        conv_file = CONV_DIR / f"{conv_id}.json"
+        conv_file = base_path / f"{conv_id}.json"
         if conv_file.exists():
             with open(conv_file, "r", encoding="utf-8") as f:
                 _conversation_cache[conv_id] = json.load(f)
@@ -97,9 +97,10 @@ def _build_full_conv_context_openclaw(conv_id: str) -> str:
 
 #OpenClaw
 class Conversation:
-    def __init__(self, conv_id: str, benchmark: str):
+    def __init__(self, conv_id: str, benchmark: str, conversation_base: str | Path | None = None):
         self.conv_id = conv_id
         self.benchmark = benchmark
+        self.haystack_session_ids = None
         if self.benchmark == "longmemeval":
             self.full_conv = _build_full_conv_context_longmemeval(conv_id)
             self.haystack_session_ids = (
@@ -108,7 +109,7 @@ class Conversation:
                 else None
             )
         elif self.benchmark == "locomo":
-            self.full_conv = _build_full_conv_context_locomo(conv_id)
+            self.full_conv = _build_full_conv_context_locomo(conv_id, conversation_base)
         elif self.benchmark == "openclaw":
             #openclaw预留的，你别动
             self.full_conv = _build_full_conv_context_openclaw(conv_id)

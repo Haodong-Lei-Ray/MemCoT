@@ -10,6 +10,7 @@ import pickle
 import sys
 import time
 from pathlib import Path
+from agent.conversation import Conversation
 
 # MemCoT 项目根（本文件位于 tool/rag/rag.py）
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -224,26 +225,357 @@ def create_img_retriever(
     print(f"[create_img_retriever] Loaded from {index_dir}, top_k={top_k}")
     return retriever
 
+
+from tool.show import cil
 class NaiveRagRetriever:
-    def __init__(self, working_dir: str, conv_id: str, top_k: int):
+    def __init__(self, working_dir: str, conversation_base: str):
         self.working_dir = working_dir
         self.rag_type = "naive"
-        self.conv_id = conv_id
+        # openclaw
+        self.conversation_base = conversation_base
+    # openclaw
+    def get_session_list(self):
+        import subprocess
+        import json
+        import os
+
+        session_file = os.path.join(self.working_dir, "session.json")
+        if os.path.exists(session_file):
+            with open(session_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        else:
+            try:
+                result = subprocess.run(["openclaw", "sessions", "--json"], capture_output=True, text=True, check=True)
+                data = json.loads(result.stdout)
+            except Exception as e:
+                print(f"Error running openclaw sessions --json: {e}")
+                data = {"sessions": []}
+            idx = 0
+            for item in data.get("sessions", []):
+                item["rag_status"] = "fail"
+                item["index"] = idx
+                idx += 1
+            os.makedirs(self.working_dir, exist_ok=True)
+            data["session_file"] = session_file
+            with open(session_file, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        cil.show_session_list(data)
+        return data
+    
+    def wash_data(self, idx=0):
+        import json
+        import os
+        import re
+        from datetime import datetime, timezone, timedelta
+        
+        # ==========================================
+        # 1. 获取目标 session 的基本信息
+        # 从 session.json 中读取并找到对应 idx 的 sessionId
+        # ==========================================
+        session_file = os.path.join(self.working_dir, "session.json")
+        if not os.path.exists(session_file):
+            raise FileNotFoundError(f"Session file not found: {session_file}")
+            
+        with open(session_file, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            
+        sessions = data.get("sessions", [])
+        target_session = None
+        for s in sessions:
+            if s.get("index") == idx:
+                target_session = s
+                break
+                
+        if not target_session:
+            raise ValueError(f"Session with index {idx} not found in {session_file}")
+            
+        session_id = target_session.get("sessionId")
+        if not session_id:
+            raise ValueError(f"Session with index {idx} has no sessionId")
+            
+        # ==========================================
+        # 2. 定位原始 .jsonl 文件并准备输出的清洗文件路径
+        # ==========================================
+        raw_file = os.path.join(self.conversation_base, f"{session_id}.jsonl")
+        if not os.path.exists(raw_file):
+            raise FileNotFoundError(f"Raw session file not found: {raw_file}")
+            
+        out_dir = os.path.join(self.working_dir, "session")
+        os.makedirs(out_dir, exist_ok=True)
+        out_file = os.path.join(out_dir, f"{session_id}.json")
+        
+        # ==========================================
+        # 3. 读取已存在的清洗文件，保留历史的 rag_status 状态
+        # 避免重复 embedding 已经处理过的数据
+        # ==========================================
+        existing_sessions = {}
+        if os.path.exists(out_file):
+            try:
+                with open(out_file, "r", encoding="utf-8") as f:
+                    existing_data = json.load(f)
+                for item in existing_data.get("session", []):
+                    existing_sessions[item.get("dia_id")] = item
+            except Exception:
+                pass
+            
+        # ==========================================
+        # 4. 逐行解析原始 .jsonl 文件，提取并格式化有效的 message 数据
+        # 处理 user 和 assistant 的时间、内容等字段
+        # ==========================================
+        washed_session = []
+        total_num = self.get_washable_count(raw_file)
+        wash_num = 0
+        
+        with open(raw_file, "r", encoding="utf-8") as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                try:
+                    item = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                    
+                if item.get("type") != "message":
+                    continue
+                    
+                msg = item.get("message", {})
+                role = msg.get("role")
+                dia_id = item.get("id", "")
+                
+                if role == "user":
+                    content_list = msg.get("content", [])
+                    text = ""
+                    for c in content_list:
+                        if c.get("type") == "text":
+                            text += c.get("text", "")
+                    
+                    match = re.search(r'\n\n\[(.*?)\]\s*(.*)', text, re.DOTALL)
+                    if match:
+                        date_time = match.group(1)
+                        context = match.group(2).strip()
+                    else:
+                        date_time = ""
+                        context = text.strip()
+                        
+                    rag_status = "fail"
+                    if dia_id in existing_sessions:
+                        rag_status = existing_sessions[dia_id].get("rag_status", "fail")
+                        
+                    washed_session.append({
+                        "dia_id": dia_id,
+                        "role": role,
+                        "date_time": date_time,
+                        "context": context,
+                        "rag_status": rag_status,
+                    })
+                    wash_num += 1
+                    
+                elif role == "assistant":
+                    ts_ms = msg.get("timestamp")
+                    if ts_ms:
+                        dt = datetime.fromtimestamp(ts_ms / 1000.0, tz=timezone(timedelta(hours=8)))
+                        date_time = dt.strftime("%a %Y-%m-%d %H:%M GMT+8")
+                    else:
+                        date_time = ""
+                        
+                    content_list = msg.get("content", [])
+                    text = ""
+                    for c in content_list:
+                        if c.get("type") == "text":
+                            text += c.get("text", "")
+                    
+                    if not text:
+                        text = msg.get("errorMessage", "")
+                        
+                    context = text.strip()
+                    rag_status = "fail"
+                    if dia_id in existing_sessions:
+                        rag_status = existing_sessions[dia_id].get("rag_status", "fail")
+                        
+                    washed_session.append({
+                        "dia_id": dia_id,
+                        "role": role,
+                        "date_time": date_time,
+                        "context": context,
+                        "rag_status": rag_status,
+                    })
+                    wash_num += 1
+                    
+        # ==========================================
+        # 5. 组装最终数据并保存到清洗后的 json 文件中
+        # ==========================================
+        result = {
+            "session_id": session_id,
+            "wash_num": wash_num,
+            "session": washed_session
+        }
+        
+        out_dir = os.path.join(self.working_dir, "session")
+        os.makedirs(out_dir, exist_ok=True)
+        out_file = os.path.join(out_dir, f"{session_id}.json")
+        
+        with open(out_file, "w", encoding="utf-8") as f:
+            json.dump(result, f, ensure_ascii=False, indent=2)
+            
+        print(f"[🦉 MemCoT] Washed data saved to {out_file}")
+        return out_file
+
+    def build_rag(self, idx=0):
+        import json
+        import os
+        import pickle
+        import numpy as np
+        from global_methods import get_openai_embedding
+        
+        # ==========================================
+        # 1. 获取目标 session 的基本信息
+        # 从 session.json 中读取并找到对应 idx 的 sessionId
+        # ==========================================
+        session_file = os.path.join(self.working_dir, "session.json")
+        if not os.path.exists(session_file):
+            raise FileNotFoundError(f"Session file not found: {session_file}")
+            
+        with open(session_file, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            
+        sessions = data.get("sessions", [])
+        target_session = None
+        for s in sessions:
+            if s.get("index") == idx:
+                target_session = s
+                break
+                
+        if not target_session:
+            raise ValueError(f"Session with index {idx} not found in {session_file}")
+            
+        session_id = target_session.get("sessionId")
+        if not session_id:
+            raise ValueError(f"Session with index {idx} has no sessionId")
+            
+        # ==========================================
+        # 2. 检查数据是否需要清洗 (同步状态)
+        # 对比原始文件的可清洗数量与已清洗文件中的 wash_num
+        # ==========================================
+        raw_file = os.path.join(self.conversation_base, f"{session_id}.jsonl")
+        if not os.path.exists(raw_file):
+            raise FileNotFoundError(f"Raw session file not found: {raw_file}")
+            
+        total_num = self.get_washable_count(raw_file)
+        
+        out_dir = os.path.join(self.working_dir, "session")
+        out_file = os.path.join(out_dir, f"{session_id}.json")
+        
+        needs_wash = True
+        if os.path.exists(out_file):
+            try:
+                with open(out_file, "r", encoding="utf-8") as f:
+                    washed_data = json.load(f)
+                if washed_data.get("wash_num", 0) == total_num:
+                    needs_wash = False
+            except Exception:
+                pass
+                
+        if needs_wash:
+            print(f"[🦉 MemCoT] Wash data not synced or missing. Running wash_data...")
+            self.wash_data(idx)
+            with open(out_file, "r", encoding="utf-8") as f:
+                washed_data = json.load(f)
+                
+        # ==========================================
+        # 3. 筛选出尚未 embedding 的数据 (rag_status == "fail")
+        # ==========================================
+        fail_items = [item for item in washed_data.get("session", []) if item.get("rag_status") == "fail"]
+        
+        if not fail_items:
+            print("[🦉 MemCoT] All data is embedded.")
+            return
+            
+        print(f"[🦉 MemCoT] Found {len(fail_items)} items to embed.")
+        
+        # ==========================================
+        # 4. 加载已存在的 embedding 数据库 (.pkl)
+        # ==========================================
+        emb_dir = os.path.join(self.working_dir, "emb")
+        os.makedirs(emb_dir, exist_ok=True)
+        pkl_path = os.path.join(emb_dir, f"{session_id}.pkl")
+        
+        database = {'embeddings': [], 'date_time': [], 'dia_id': [], 'context': []}
+        if os.path.exists(pkl_path):
+            try:
+                with open(pkl_path, "rb") as f:
+                    database = pickle.load(f)
+            except Exception as e:
+                print(f"Warning: Failed to load existing pkl {pkl_path}: {e}")
+                
+        # ==========================================
+        # 5. 分批调用 OpenAI API 生成新的 embedding
+        # ==========================================
+        texts_to_embed = []
+        for item in fail_items:
+            role = item.get("role", "")
+            context = item.get("context", "")
+            embedding_text = f"{role} said, {context}"
+            texts_to_embed.append(embedding_text)
+            
+        batch_size = 100
+        new_embeddings = []
+        for i in range(0, len(texts_to_embed), batch_size):
+            batch_inputs = texts_to_embed[i:i+batch_size]
+            batch_emb = get_openai_embedding(batch_inputs)
+            new_embeddings.extend(batch_emb)
+            
+        # ==========================================
+        # 6. 更新数据库内容并将状态标记为 "success"
+        # ==========================================
+        if len(database['embeddings']) > 0:
+            database['embeddings'] = np.vstack([database['embeddings'], np.array(new_embeddings)])
+        else:
+            database['embeddings'] = np.array(new_embeddings)
+            
+        for item in fail_items:
+            database['date_time'].append(item.get("date_time", ""))
+            database['dia_id'].append(item.get("dia_id", ""))
+            database['context'].append(item.get("context", ""))
+            item["rag_status"] = "success"
+            
+        # ==========================================
+        # 7. 保存更新后的数据库 (.pkl) 和清洗数据 (.json)
+        # ==========================================
+        with open(pkl_path, "wb") as f:
+            pickle.dump(database, f)
+            
+        with open(out_file, "w", encoding="utf-8") as f:
+            json.dump(washed_data, f, ensure_ascii=False, indent=2)
+            
+        print(f"[🦉 MemCoT] Successfully embedded {len(fail_items)} items and saved to {pkl_path}")
+
+    def get_washable_count(self, raw_file: str) -> int:
+        import json
+
+        total_num = 0
+        with open(raw_file, "r", encoding="utf-8") as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                try:
+                    item = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if item.get("type") == "message":
+                    total_num += 1
+        return total_num
+
+    def load_rag(self,conv_id,top_k):
         self.top_k = top_k
-        pkl_path = os.path.join(os.path.dirname(working_dir), f"locomo10_dialog_{conv_id}.pkl")
-        print(f"[rag workdir] {pkl_path}")
+        self.conv_id = conv_id
+        pkl_path = os.path.join(self.working_dir, f"{self.conv_id}.pkl")
         with open(pkl_path, "rb") as f:
             self.db = pickle.load(f)
-
-    def get_dp(self):
-        return self.db
+        print(f"[🦉 MemCoT] rag workdir: {pkl_path}")
 
     def retrieve_multi(
         self,
         queries: list[str],
-        # conv_id: str,
-        # top_k: int = RAG_TOP_K,
-        # working_dir: str = None,
     ) -> tuple[list[dict], list[dict]]:
         """
         Naive RAG: 从 naiverag 目录加载 pkl，向量检索。返回 (deduped, result_list)。
@@ -296,6 +628,8 @@ def _load_rag_config(path: str | Path) -> dict:
         "rag_topk": 10,
         "rag_type": RAG_TYPE_LIGHTRAG,
         "rag_base": '../memory/rag_storage',
+        "benchmark": "locomo",
+        "conversation_base": str(PROJECT_ROOT / "benchmark" / "locomo" / "data" / "con"),
     }
     path = Path(path)
     if not path.exists():
@@ -306,32 +640,65 @@ def _load_rag_config(path: str | Path) -> dict:
     cfg.update(raw)
     return cfg
 
-def build_rag_retrieve(
+def load_rag_retrieve(
     rag_file_path: str,
-    conv_id: str,
+    conv_id: str | None = None,
     top_k: int | None = None,
 ):
     """根据 rag.json + conv_id 创建检索器实例。"""
     rag_cfg = _load_rag_config(rag_file_path)
+    if not conv_id:
+        raise ValueError("conv_id is required (pass it or set 'conv-id' in rag config)")
 
+    conversation_base = rag_cfg["conversation_base"]
+    benchmark = str(rag_cfg['benchmark'])
     rag_type = str(rag_cfg["rag_type"])
     rag_base = str(rag_cfg["rag_base"])
     if top_k is None:
         top_k = rag_cfg["rag_topk"]
 
-    workspace = conv_id.replace("-", "")
-    working_dir = os.path.join(rag_base, workspace)
-    print(f"working_dir: {working_dir}")
+    print(f"[🦉 MemCoT] Rag Base: {rag_base}")
 
     if rag_type == RAG_TYPE_NAIVE:
-        ragretriever = NaiveRagRetriever(working_dir, conv_id, top_k)
+        working_dir = rag_base
+        ragretriever = NaiveRagRetriever(working_dir, conversation_base)
+        ragretriever.load_rag(conv_id)
     elif rag_type == RAG_TYPE_LIGHTRAG:
+        workspace = conv_id.replace("-", "")
+        working_dir = os.path.join(rag_base, workspace)
         rag = create_lightrag(working_dir)
-        ragretriever = LightRagRetriever(top_k, working_dir, rag)
+        ragretriever = LightRagRetriever(working_dir, rag, top_k)
     else:
         raise ValueError(f"rag_type must be one of {RAG_TYPE_CHOICES}, got {rag_type!r}")
-    return ragretriever
+    conversation = Conversation(conv_id, benchmark, conversation_base)
+    return ragretriever, conversation
 
+def build_rag_retrieve(
+    rag_file_path: str
+):
+    """根据 rag.json + conv_id 创建检索器实例。"""
+    rag_cfg = _load_rag_config(rag_file_path)
+
+    conversation_base = rag_cfg["conversation_base"]
+    benchmark = str(rag_cfg['benchmark'])
+    rag_type = str(rag_cfg["rag_type"])
+    rag_base = str(rag_cfg["rag_base"])
+
+    print(f"[🦉 MemCoT] Rag Base: {rag_base}")
+
+    if rag_type == RAG_TYPE_NAIVE:
+        working_dir = rag_base
+        ragretriever = NaiveRagRetriever(working_dir, conversation_base)
+    elif rag_type == RAG_TYPE_LIGHTRAG:
+        workspace = conv_id.replace("-", "")
+        working_dir = os.path.join(rag_base, workspace)
+        rag = create_lightrag(working_dir)
+        ragretriever = LightRagRetriever(working_dir, rag, top_k)
+    else:
+        raise ValueError(f"rag_type must be one of {RAG_TYPE_CHOICES}, got {rag_type!r}")
+    # conversation = Conversation(conv_id, benchmark, conversation_base)
+    conversation = None
+    return ragretriever, conversation
 
 def finalize_lightrag(rag):
     """关闭 LightRAG 实例的存储。"""

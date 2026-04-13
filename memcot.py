@@ -38,7 +38,7 @@ from tool.rag import (
     RAG_TYPE_CHOICES,
     RAG_TYPE_LIGHTRAG,
     RAG_TYPE_NAIVE,
-    build_rag_retrieve,
+    load_rag_retrieve,
     create_img_retriever,
     finalize_lightrag,
     get_rag_event_loop,
@@ -55,7 +55,6 @@ except ImportError:
 
 # Agent 模块：rag_view, full_view, answer, thought, observation
 from agent.agent import (
-    Conversation,
     ZoomInFocalRetrieve,
     ZoomOutContextExpansion,
     JudgeAgent,
@@ -180,21 +179,16 @@ class MemCoT:
         model: str = DEFAULT_MODEL,
         memcot_file_path: str = MEMCOT_CONFIG_PATH,
         rag_file_path: str = RAG_CONFIG_PATH,
-        conv_id: str = 0,
-        benchmark: str = "locomo",
+        conv_id: str | None = None,
         rag_top_k = None,
     ):
-        # 为Memory Benchmark 搞的eval
-        self.benchmark = benchmark
-        self.conv_id = conv_id
-        # 初始化RAG基础设施
-        self.ragretriever = build_rag_retrieve(
+        # 初始化RAG基础设施, 初始化Conversation
+        self.ragretriever, self.conversation = load_rag_retrieve(
             rag_file_path=rag_file_path,
             conv_id=conv_id,
             top_k=rag_top_k,
         )
-        # 初始化Conversation
-        self.conversation = Conversation(conv_id, benchmark)
+        self.conv_id = conv_id
 
         memcot_cfg = _load_memcot_config(memcot_file_path)
         agent_flag = str(memcot_cfg["agent_flag"])
@@ -217,7 +211,7 @@ class MemCoT:
         self.img_retriever = None
         if agent_flag[2] == "1":
             print("初始化视觉搜索...")
-            self.img_retriever = create_img_retriever(conv_id, img_index_base=img_index_base)
+            self.img_retriever = create_img_retriever(self.conv_id, img_index_base=img_index_base)
         # judge_agent
         self.judge_agent = JudgeAgent(model, temperature=0.0)
 
@@ -393,12 +387,12 @@ class MemCoT:
 
             # ─── judge_agent ───给出是否能回答的结果
             obs = self.judge_agent.run(
-                query,
-                temp_short_memory,
-                short_semantic_memory,
+                query=query,
+                conversation=self.conversation,
+                temp_useful_rag=temp_short_memory,
+                short_memory=short_semantic_memory,
                 fail_queue_trajectory=fail_episondic_queue_trajectory,
                 conv_memory=conv_memory,
-                conversation=self.conversation,
             )
 
             # Short Memory Evolution
@@ -512,12 +506,6 @@ if __name__ == "__main__":
     )
     # benchmark
     parser.add_argument("-c", "--conv-id", default="conv-26", help="Conversation ID")
-    parser.add_argument(
-        "--benchmark",
-        default="locomo",
-        type=str,
-        help="Benchmark name for prompt selection (default: locomo)",
-    )
     args = parser.parse_args()
     query = " ".join(args.query)
     memcot = MemCoT(
@@ -525,7 +513,6 @@ if __name__ == "__main__":
         memcot_file_path=args.memcot_config,
         rag_file_path=args.rag_config,
         rag_top_k=args.rag_topk,
-        benchmark=args.benchmark,
         conv_id=args.conv_id,
     )
     try:
