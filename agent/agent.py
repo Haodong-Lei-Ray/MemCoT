@@ -204,72 +204,80 @@ def _parse_json_from_llm(text: str) -> dict | None:
     except json.JSONDecodeError:
         print(json_str)
         raise ValueError(f"Failed to parse JSON from LLM output.")
-        # 多种修复策略：未闭合数组、尾随逗号、括号配对
-        # json_str = fix_unclosed_array_before_key(json_str)
-        # json_str = remove_trailing_commas(json_str)
-        # json_str = fix_bracket_balance(json_str)
-        # return json.loads(json_str)
-#Agent
-def rag_view_agent(
-    root_query: str,
-    query_queue: list[str],
-    rag_results: list[dict],
-    last_thought_information: str,
-    known_info_rag: list[dict],
-    model: str,
-    temperature: int = 0,
-    benchmark: str = "locomo",
-    haystack_session_ids: list[str] | None = None
-) -> dict:
-    """
-    RAG View agent: 观察 rag_results，选出 useful_dia_ids，并写 report。
-    report 说明：(1) 为什么选用这些 useful_dia_ids；(2) 还缺什么信息；(3) 建议的新 query。
-    返回 {useful_evidence: [...], report: "..."}
-    """
 
-    # 执行排序：locomo 按 Dx:y；longmemeval 按 date_time + session 序 + turn + chunk
-    rag_results_sort = sorted(
-        rag_results,
-        key=lambda x: get_sort_key(x, benchmark, haystack_session_ids=haystack_session_ids),
-    )
-    rag_results_list, dia_id_list = _format_short_rag_for_prompt(rag_results_sort)
-    rag_results_text = "\n".join(rag_results_list)
-    search_query = query_queue if query_queue else root_query
-    query_information = f'root_query: {root_query}' if root_query == search_query else f'root_query: {root_query}\nsearch_query: {search_query}' 
-    
-    known_info_rag_sort = sorted(
-        known_info_rag,
-        key=lambda x: get_sort_key(x, benchmark, haystack_session_ids=haystack_session_ids),
-    )
-    known_info_rag_text, _ = _format_short_memory_for_prompt(
-        known_info_rag_sort, benchmark, haystack_session_ids=haystack_session_ids
-    )
-    known_information = f'Known information: {known_info_rag_text}\n{last_thought_information}' if known_info_rag_text or last_thought_information else ''
+# Agent
+class ZoomInFocalRetrieve:
+    """RAG View：`model` / `temperature` 在构造时绑定，`run()` 不再接收这两项。"""
 
-    prompt = rag_view_agent_prompt(query_information, known_information,rag_results_text,benchmark)
+    def __init__(self, model: str, temperature: float = 1.0):
+        self.model = model
+        self.temperature = temperature
 
-    try_step = 3
-    while True:
-        try_step -= 1
-        try:
-            print(f"[rag_view_agent] input_tokens={_estimate_input_tokens(prompt, model)}")
-            resp = run_chatgpt(prompt, model=model, num_tokens_request=1024, temperature=temperature)
-            out = _parse_json_from_llm(resp)
-            break
-        except ValueError:
-            print("Failed to parse JSON, retrying with cleaned text...")
-            continue
-    num_ids = out.get("useful_ids", [])
-    num_ids = [int(i) if isinstance(i, str) else i for i in num_ids]
-    ids = [rag_results_sort[i] for i in num_ids] if len(num_ids) != 0 else []
-    thinking = out.get("thinking")
-    missing_information = out.get("missing_information")
-    
-    return {
-        "useful_evidence": ids,
-        "thinking": thinking,
-        "missing_information": missing_information,
-    }
+    def run(
+        self,
+        root_query: str,
+        query_queue: list[str],
+        rag_results: list[dict],
+        last_thought_information: str,
+        known_info_rag: list[dict],
+        benchmark: str = "locomo",
+        haystack_session_ids: list[str] | None = None,
+    ) -> dict:
+        """
+        RAG View agent: 观察 rag_results，选出 useful_dia_ids，并写 report。
+        report 说明：(1) 为什么选用这些 useful_dia_ids；(2) 还缺什么信息；(3) 建议的新 query。
+        返回 {useful_evidence: [...], report: "..."}
+        """
+
+        # 执行排序：locomo 按 Dx:y；longmemeval 按 date_time + session 序 + turn + chunk
+        rag_results_sort = sorted(
+            rag_results,
+            key=lambda x: get_sort_key(x, benchmark, haystack_session_ids=haystack_session_ids),
+        )
+        rag_results_list, dia_id_list = _format_short_rag_for_prompt(rag_results_sort)
+        rag_results_text = "\n".join(rag_results_list)
+        search_query = query_queue if query_queue else root_query
+        query_information = f'root_query: {root_query}' if root_query == search_query else f'root_query: {root_query}\nsearch_query: {search_query}' 
+        
+        known_info_rag_sort = sorted(
+            known_info_rag,
+            key=lambda x: get_sort_key(x, benchmark, haystack_session_ids=haystack_session_ids),
+        )
+        known_info_rag_text, _ = _format_short_memory_for_prompt(
+            known_info_rag_sort, benchmark, haystack_session_ids=haystack_session_ids
+        )
+        known_information = f'Known information: {known_info_rag_text}\n{last_thought_information}' if known_info_rag_text or last_thought_information else ''
+
+        prompt = rag_view_agent_prompt(query_information, known_information,rag_results_text,benchmark)
+
+        try_step = 3
+        while True:
+            try_step -= 1
+            try:
+                print(f"[rag_view_agent] input_tokens={_estimate_input_tokens(prompt, self.model)}")
+                resp = run_chatgpt(
+                    prompt,
+                    model=self.model,
+                    num_tokens_request=1024,
+                    temperature=self.temperature,
+                )
+                out = _parse_json_from_llm(resp)
+                break
+            except ValueError:
+                print("Failed to parse JSON, retrying with cleaned text...")
+                continue
+        num_ids = out.get("useful_ids", [])
+        num_ids = [int(i) if isinstance(i, str) else i for i in num_ids]
+        ids = [rag_results_sort[i] for i in num_ids] if len(num_ids) != 0 else []
+        thinking = out.get("thinking")
+        missing_information = out.get("missing_information")
+        
+        return {
+            "useful_evidence": ids,
+            "thinking": thinking,
+            "missing_information": missing_information,
+        }
+
 
 def get_context_window4locomo(
     temp_useful_rag: list[dict], conv_id: str, K: int = 3,
@@ -399,7 +407,7 @@ def get_context_window4longmemeval(
     return context_blocks, rag_results
 
 
-def middle_view_agent(
+def zoom_out_context_expansion_agent(
     root_query: str,
     query_queue: list[str],
     temp_useful_rag: list[dict],
@@ -603,7 +611,7 @@ def _load_session_images(conv_id: str, session_nums: list) -> list:
 def _is_multimodal_model(model: str) -> bool:
     return any(kw in model for kw in MULTIMODAL_KEYWORDS)
 
-def visual_ocr_agent(
+def panoramic_visual_grounding(
     root_query: str,
     query_queue: list,
     temp_useful_rag: list,
@@ -760,7 +768,7 @@ Output a JSON object:
 Output ONLY valid JSON."""
 
 WRONG_LIST = ['No information available', 'unknown']
-def observation_agent(query: str, temp_useful_rag: list[dict], short_memory: list[dict], model: str, fail_queue_trajectory: list[str], temperature: int, conv_memory: list[str], benchmark: str = "locomo", haystack_session_ids: list[str] | None = None) -> dict:
+def judge_agent(query: str, temp_useful_rag: list[dict], short_memory: list[dict], model: str, fail_queue_trajectory: list[str], temperature: int, conv_memory: list[str], benchmark: str = "locomo", haystack_session_ids: list[str] | None = None) -> dict:
     """
     Observation: 用 query 比对 RAG 结果（含原文对话，便于推断时间等）。
     返回: {can_answer: bool, answer: str, useful_indices: [0,1,...]}  # indices 为可能有效的 RAG 序号(1-based)
@@ -869,6 +877,7 @@ def answer_agent(query: str, short_memory: list[dict], obs_report: str, model: s
             "answer": resp,
         }
 
+
 def guess_answer_agent(query: str, short_memory: list[dict], obs_report: str, model: str, additional_information: str = "", benchmark: str = "locomo", haystack_session_ids: list[str] | None = None) -> dict:
     """
     Observation: 用 query 比对 RAG 结果（含原文对话，便于推断时间等）。
@@ -933,3 +942,32 @@ def conv_answer_agent(
         "thinking": '',
         "answer": resp,
     }
+
+def return_answer_agent_prompt(
+    query: str,
+    short_memory: list[dict],
+    obs_report: str,
+    additional_information: str = "",
+    benchmark: str = "locomo",
+    haystack_session_ids: list[str] | None = None,
+) -> str:
+    """仅构造 answer_agent 所用 prompt（不调用 LLM）。返回 prompt 字符串。"""
+    rag_results_sort = sorted(
+        short_memory,
+        key=lambda x: get_sort_key(x, benchmark, haystack_session_ids=haystack_session_ids),
+    )
+    short_memory, _ = _format_short_rag_for_prompt(rag_results_sort)
+    short_memory_text = "Short Memory:\n" + "\n".join(short_memory) if short_memory else ""
+    # additional_information_text = "3.IF you can not answer by Short Memory, just follow this thinking and answer: "+additional_information if additional_information else ''
+    additional_information_text = ""
+    prompt = answer_agent_prompt(additional_information_text, short_memory_text, query, benchmark)
+    return prompt
+
+
+def return_conv_answer_agent_prompt(
+    root_query: str,
+    full_conv: str,
+    benchmark: str = "locomo",
+) -> str:
+    """仅构造 conv_answer_agent 所用 prompt（不调用 LLM）。"""
+    return conv_answer_agent_prompt(full_conv, root_query, benchmark)

@@ -25,7 +25,6 @@ import argparse
 import asyncio
 import json
 import os
-import re
 import sys
 from pathlib import Path
 from typing import Optional
@@ -33,6 +32,8 @@ from global_methods import with_agent_llm_config, get_openai_config_source
 
 PROJECT_ROOT = Path(__file__).parent
 sys.path.insert(0, str(PROJECT_ROOT))
+from tool.longmemevaltool import rewrite_first_person_to_user as _rewrite_first_person_to_user
+
 LIGHTRAG_PATH = PROJECT_ROOT / "mem" / "LightRAG"
 sys.path.insert(0, str(LIGHTRAG_PATH))
 
@@ -44,12 +45,12 @@ except ImportError:
 
 # Agent 模块：rag_view, full_view, answer, thought, observation
 from agent.agent import (
-    rag_view_agent,
-    middle_view_agent,
+    ZoomInFocalRetrieve,
+    zoom_out_context_expansion_agent,
     answer_agent,
     guess_answer_agent,
-    observation_agent,
-    visual_ocr_agent,
+    judge_agent,
+    panoramic_visual_grounding,
     conv_answer_agent,
     _build_full_conv_context,
     _build_full_conv_context_longmemeval,
@@ -69,10 +70,32 @@ FULL_VIEW_SESS_NUM = 1  # Full View agent 每次选择的 session 数量
 DEFAULT_AGENT_FLAG = "11000"
 AGENT_LLM_CONFIG_PATH = PROJECT_ROOT / "config" / "configqwen1.json"
 
-rag_view_agent_with_cfg = with_agent_llm_config(AGENT_LLM_CONFIG_PATH)(rag_view_agent)
-middle_view_agent_with_cfg = with_agent_llm_config(AGENT_LLM_CONFIG_PATH)(middle_view_agent)
-visual_ocr_agent_with_cfg = with_agent_llm_config(AGENT_LLM_CONFIG_PATH)(visual_ocr_agent)
-observation_agent_with_cfg = with_agent_llm_config(AGENT_LLM_CONFIG_PATH)(observation_agent)
+
+@with_agent_llm_config(AGENT_LLM_CONFIG_PATH)
+def rag_view_agent_with_cfg(
+    root_query: str,
+    query_queue: list[str],
+    rag_results: list[dict],
+    last_thought_information: str,
+    known_info_rag: list[dict],
+    model: str,
+    benchmark: str = "locomo",
+    haystack_session_ids: list[str] | None = None,
+) -> dict:
+    return ZoomInFocalRetrieve(model, temperature=1.0).run(
+        root_query=root_query,
+        query_queue=query_queue,
+        rag_results=rag_results,
+        last_thought_information=last_thought_information,
+        known_info_rag=known_info_rag,
+        benchmark=benchmark,
+        haystack_session_ids=haystack_session_ids,
+    )
+
+
+middle_view_agent_with_cfg = with_agent_llm_config(AGENT_LLM_CONFIG_PATH)(zoom_out_context_expansion_agent)
+visual_ocr_agent_with_cfg = with_agent_llm_config(AGENT_LLM_CONFIG_PATH)(panoramic_visual_grounding)
+observation_agent_with_cfg = with_agent_llm_config(AGENT_LLM_CONFIG_PATH)(judge_agent)
 answer_agent_with_cfg = with_agent_llm_config(AGENT_LLM_CONFIG_PATH)(answer_agent)
 conv_answer_agent_with_cfg = with_agent_llm_config(AGENT_LLM_CONFIG_PATH)(conv_answer_agent)
 
@@ -403,20 +426,7 @@ async def rag_retrieve_multi_async(
     raise ValueError(f"rag_type must be one of {RAG_TYPE_CHOICES}, got {rag_type!r}")
 
 
-def _rewrite_first_person_to_user(text: str) -> str:
-    """将 I/me/my 改写为 user 第三人称，与 LongMemEval RAG 索引中的 speaker 格式一致。"""
-    t = text
-    t = re.sub(r"\bI'm\b", "the user is", t, flags=re.IGNORECASE)
-    t = re.sub(r"\bI've\b", "the user has", t, flags=re.IGNORECASE)
-    t = re.sub(r"\bI'll\b", "the user will", t, flags=re.IGNORECASE)
-    t = re.sub(r"\bI'd\b", "the user would", t, flags=re.IGNORECASE)
-    t = re.sub(r"\bI\b", "the user", t)
-    t = re.sub(r"\bme\b", "the user", t, flags=re.IGNORECASE)
-    t = re.sub(r"\bmy\b", "the user's", t, flags=re.IGNORECASE)
-    return t
-
-
-async def run_react_lightrag_async(
+async def run_memcot_async(
     query: str,
     conv_id: str,
     category: int,
@@ -491,9 +501,8 @@ async def run_react_lightrag_async(
                 last_thought_information=last_queries,
                 known_info_rag=short_memory,
                 model=model,
-                temperature=1.0,
                 benchmark=benchmark,
-                haystack_session_ids=haystack_session_ids
+                haystack_session_ids=haystack_session_ids,
             )
             rag_dia = rag_view_result.get("useful_evidence", [])
             rag_view_thinking = rag_view_result.get("thinking", [])
@@ -686,12 +695,13 @@ async def run_react_lightrag_async(
     print(f"Answer: {answer}")
     return result
 
-    # else:
-    #     ans = guess_answer_agent(query, short_memory, model=model, obs_report=obs_thinking,
-            # additional_information=additional_information)
+def _save_json(data, path: str):
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
 
-
-def run_react_lightrag(
+#=======================memcot===================================
+def run_memcot(
     query: str, conv_id: str, category: int, model: str = DEFAULT_MODEL,
     output_dir: Optional[str] = None, max_step: int = MAX_LOOP_STEP,
     rag_top_k: int = RAG_TOP_K, rag_type: str = RAG_TYPE_LIGHTRAG,
@@ -701,7 +711,7 @@ def run_react_lightrag(
 ) -> dict:
     """Sync wrapper — delegates to run_react_lightrag_async via event-loop bridge."""
     loop = _get_rag_event_loop()
-    return loop.run_until_complete(run_react_lightrag_async(
+    return loop.run_until_complete(run_memcot_async(
         query=query, conv_id=conv_id, category=category, model=model,
         output_dir=output_dir, max_step=max_step, rag_top_k=rag_top_k,
         rag_type=rag_type, working_dir=working_dir,
@@ -709,12 +719,6 @@ def run_react_lightrag(
         rag=rag, full_conv=full_conv, img_retriever=img_retriever,
         benchmark=benchmark,
     ))
-
-
-def _save_json(data, path: str):
-    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="ReAct + RAG (naive/lightrag) on LoCoMo")
@@ -783,7 +787,7 @@ if __name__ == "__main__":
         print("初始化视觉搜索...")
         img_retriever = create_img_retriever(conv_id, img_index_base=args.img_index_base)
     try:
-        result = run_react_lightrag(
+        result = run_memcot(
             query=q,
             conv_id=conv_id,
             category=category,

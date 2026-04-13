@@ -25,13 +25,15 @@ import argparse
 import asyncio
 import json
 import os
-import re
 import sys
 from pathlib import Path
 from typing import Optional
+from global_methods import with_agent_llm_config, get_openai_config_source
 
-PROJECT_ROOT = Path(__file__).resolve().parent
+PROJECT_ROOT = Path(__file__).parent
 sys.path.insert(0, str(PROJECT_ROOT))
+from tool.longmemevaltool import rewrite_first_person_to_user as _rewrite_first_person_to_user
+
 LIGHTRAG_PATH = PROJECT_ROOT / "mem" / "LightRAG"
 sys.path.insert(0, str(LIGHTRAG_PATH))
 
@@ -43,12 +45,12 @@ except ImportError:
 
 # Agent 模块：rag_view, full_view, answer, thought, observation
 from agent.agent import (
-    rag_view_agent,
-    middle_view_agent,
+    ZoomInFocalRetrieve,
+    zoom_out_context_expansion_agent,
     answer_agent,
     guess_answer_agent,
-    observation_agent,
-    visual_ocr_agent,
+    judge_agent,
+    panoramic_visual_grounding,
     conv_answer_agent,
     _build_full_conv_context,
     _build_full_conv_context_longmemeval,
@@ -59,13 +61,43 @@ from agent.agent import (
 DEFAULT_LIGHTRAG_WORKING_BASE = "/mnt/petrelfs/leihaodong/ICML/exp/memory/lightrag/rag_storage"
 NAIVERAG_BASE = "/mnt/petrelfs/leihaodong/ICML/exp/memory/naiverag"
 DEFAULT_IMG_INDEX_BASE = "/mnt/petrelfs/leihaodong/ICML/exp/memory/img_mem/vit_rag"
-DATA_PATH = PROJECT_ROOT / "benchmark" / "locomo" / "data" / "locomo10.json"
+DATA_PATH = PROJECT_ROOT / "data" / "locomo10.json"
 DEFAULT_MODEL = "Qwen/Qwen2.5-14B-Instruct"
 DEFAULT_OUTPUT_DIR = "/mnt/petrelfs/leihaodong/ICML/locomo/module_version/version2/eval_output"
 MAX_LOOP_STEP = 10
 RAG_TOP_K = 5
 FULL_VIEW_SESS_NUM = 1  # Full View agent 每次选择的 session 数量
 DEFAULT_AGENT_FLAG = "11000"
+AGENT_LLM_CONFIG_PATH = PROJECT_ROOT / "config" / "configqwen1.json"
+
+
+@with_agent_llm_config(AGENT_LLM_CONFIG_PATH)
+def rag_view_agent_with_cfg(
+    root_query: str,
+    query_queue: list[str],
+    rag_results: list[dict],
+    last_thought_information: str,
+    known_info_rag: list[dict],
+    model: str,
+    benchmark: str = "locomo",
+    haystack_session_ids: list[str] | None = None,
+) -> dict:
+    return ZoomInFocalRetrieve(model, temperature=1.0).run(
+        root_query=root_query,
+        query_queue=query_queue,
+        rag_results=rag_results,
+        last_thought_information=last_thought_information,
+        known_info_rag=known_info_rag,
+        benchmark=benchmark,
+        haystack_session_ids=haystack_session_ids,
+    )
+
+
+middle_view_agent_with_cfg = with_agent_llm_config(AGENT_LLM_CONFIG_PATH)(zoom_out_context_expansion_agent)
+visual_ocr_agent_with_cfg = with_agent_llm_config(AGENT_LLM_CONFIG_PATH)(panoramic_visual_grounding)
+observation_agent_with_cfg = with_agent_llm_config(AGENT_LLM_CONFIG_PATH)(judge_agent)
+answer_agent_with_cfg = with_agent_llm_config(AGENT_LLM_CONFIG_PATH)(answer_agent)
+conv_answer_agent_with_cfg = with_agent_llm_config(AGENT_LLM_CONFIG_PATH)(conv_answer_agent)
 
 
 
@@ -86,23 +118,21 @@ def _get_chunk_id_to_doc_id(working_dir: str) -> dict:
     }
 
 
-async def _lightrag_retrieve_async(query: str, conv_id: str, top_k: int = RAG_TOP_K,
-                                   working_dir: str = None,
-                                   rag=None) -> list[dict]:
-    """LightRAG aquery_data 检索。返回 [{dia_id, date_time, context, score, from_query}, ...]
-    如果传入 rag 实例则复用，否则临时创建。
-    """
-    if rag is None:
-        raise ValueError("rag instance must be provided")
-    if working_dir is None:
-        raise ValueError("working_dir must be provided")
+def _lightrag_retrieve_sync(query: str, conv_id: str, top_k: int = RAG_TOP_K,
+                            working_dir: str = None, rag=None) -> list[dict]:
+    """同步版 LightRAG 检索（关键修复点）"""
+    if rag is None or working_dir is None:
+        raise ValueError("rag instance and working_dir must be provided")
 
     from lightrag import QueryParam
     param = QueryParam(mode="hybrid", top_k=top_k, chunk_top_k=top_k)
-    result = await rag.aquery_data(query, param)
 
-    if result.get("status") != "success" or not result.get("data", {}).get("chunks"):
-        return []
+    result = rag.query_data(query, param)   # ← 改成同步调用！
+
+    if result.get("status") != "success":
+        raise ValueError(f"LightRAG status != success for conv_id: {conv_id}")
+    if not result.get("data", {}).get("chunks"):
+        raise ValueError(f"LightRAG returned no chunks for conv_id: {conv_id}")
 
     chunks = result["data"]["chunks"]
     chunk_id_to_doc = _get_chunk_id_to_doc_id(working_dir)
@@ -110,14 +140,11 @@ async def _lightrag_retrieve_async(query: str, conv_id: str, top_k: int = RAG_TO
     for i, c in enumerate(chunks):
         chunk_id = c.get("chunk_id", "")
         dia_id = chunk_id_to_doc.get(chunk_id, chunk_id)
-        date_time = c.get("file_path", "")
-        context = c.get("content", "")
-        score = 1.0 - (i * 0.01)
         results.append({
             "dia_id": dia_id,
-            "date_time": date_time,
-            "context": context,
-            "score": float(score),
+            "date_time": c.get("file_path", ""),
+            "context": c.get("content", ""),
+            "score": float(1.0 - i * 0.01),
             "from_query": query,
         })
     return results
@@ -151,8 +178,12 @@ def create_lightrag(working_dir: str):
     from lightrag import LightRAG
     from lightrag.llm.openai import gpt_4o_mini_complete, openai_embed
 
+    normalized_working_dir = os.path.normpath(working_dir)
+    workspace = os.path.basename(normalized_working_dir)
+    working_root = os.path.dirname(normalized_working_dir)
     rag = LightRAG(
-        working_dir=working_dir,
+        working_dir=working_root,
+        workspace=workspace,
         embedding_func=openai_embed,
         llm_model_func=gpt_4o_mini_complete,
         chunk_token_size=1200,
@@ -271,8 +302,31 @@ def lightrag_retrieve_multi(
     return deduped, result_list
 
 
+def lightrag_retrieve_multi(
+    queries: list[str], conv_id: str, top_k: int = RAG_TOP_K,
+    working_dir: str = None, rag=None,
+) -> tuple[list[dict], list[dict]]:
+    """同步多 query 检索 + 去重"""
+    all_results = []
+    result_list = []
+    for q in queries:
+        res = _lightrag_retrieve_sync(q, conv_id, top_k, working_dir, rag)
+        all_results.extend(res)
+        result_list.append({"query": q, "res": res})
+
+    # 去重
+    seen = set()
+    deduped = []
+    for r in all_results:
+        did = r.get("dia_id", "")
+        if did and did not in seen:
+            seen.add(did)
+            deduped.append(r)
+    return deduped, result_list
+
+
 def naiverag_retrieve_multi(
-    queries: list[str], conv_id: str, top_k: int = RAG_TOP_K, working_dir: str=None
+    queries: list[str], conv_id: str, top_k: int = RAG_TOP_K
 ) -> tuple[list[dict], list[dict]]:
     """
     Naive RAG: 从 naiverag 目录加载 pkl，向量检索。返回 (deduped, result_list)，格式与 lightrag_retrieve_multi 一致。
@@ -281,9 +335,9 @@ def naiverag_retrieve_multi(
     import numpy as np
     from global_methods import get_openai_embedding
 
-    NAIVERAG_BASE = os.path.dirname(working_dir)
     pkl_path = os.path.join(NAIVERAG_BASE, f"locomo10_dialog_{conv_id}.pkl")
-    print(f"[rag workdir] {pkl_path}")
+    if not os.path.exists(pkl_path):
+        return [], [{"query": q, "res": []} for q in queries]
 
     with open(pkl_path, "rb") as f:
         db = pickle.load(f)
@@ -298,17 +352,15 @@ def naiverag_retrieve_multi(
 
     all_results = []
     result_list = []
-    if isinstance(queries, str):
-        queries = [queries]
     for q in queries:
         query_emb = get_openai_embedding([q])
         scores = np.dot(query_emb, np.array(embeddings).T).flatten()
         top_indices = np.argsort(scores)[::-1][:top_k]
         res = [
             {
-                "dia_id": dia_ids[idx],
-                "date_time": date_times[idx],
-                "context": contexts[idx],
+                "dia_id": dia_ids[idx] if idx < len(dia_ids) else "",
+                "date_time": date_times[idx] if idx < len(date_times) else "",
+                "context": contexts[idx] if idx < len(contexts) else "",
                 "score": float(scores[idx]),
                 "from_query": q,
             }
@@ -350,26 +402,29 @@ def rag_retrieve_multi(
 ) -> tuple[list[dict], list[dict]]:
     """根据 rag_type 选择 NaiveRAG 或 LightRAG 检索。返回 (deduped, result_list)。"""
     if rag_type == RAG_TYPE_NAIVE:
-        return naiverag_retrieve_multi(queries, conv_id, top_k, working_dir)
+        return naiverag_retrieve_multi(queries, conv_id, top_k)
     if rag_type == RAG_TYPE_LIGHTRAG:
         return lightrag_retrieve_multi(queries, conv_id, top_k, working_dir, rag=rag)
     raise ValueError(f"rag_type must be one of {RAG_TYPE_CHOICES}, got {rag_type!r}")
 
 
-def _rewrite_first_person_to_user(text: str) -> str:
-    """将 I/me/my 改写为 user 第三人称，与 LongMemEval RAG 索引中的 speaker 格式一致。"""
-    t = text
-    t = re.sub(r"\bI'm\b", "the user is", t, flags=re.IGNORECASE)
-    t = re.sub(r"\bI've\b", "the user has", t, flags=re.IGNORECASE)
-    t = re.sub(r"\bI'll\b", "the user will", t, flags=re.IGNORECASE)
-    t = re.sub(r"\bI'd\b", "the user would", t, flags=re.IGNORECASE)
-    t = re.sub(r"\bI\b", "the user", t)
-    t = re.sub(r"\bme\b", "the user", t, flags=re.IGNORECASE)
-    t = re.sub(r"\bmy\b", "the user's", t, flags=re.IGNORECASE)
-    return t
+def rag_retrieve_multi(
+    queries: list[str],
+    conv_id: str,
+    top_k: int = RAG_TOP_K,
+    rag_type: str = RAG_TYPE_LIGHTRAG,
+    working_dir: str = None,
+    rag=None,
+) -> tuple[list[dict], list[dict]]:
+    """统一同步检索入口"""
+    if rag_type == RAG_TYPE_NAIVE:
+        return naiverag_retrieve_multi(queries, conv_id, top_k)
+    if rag_type == RAG_TYPE_LIGHTRAG:
+        return lightrag_retrieve_multi(queries, conv_id, top_k, working_dir, rag)
+    raise ValueError(f"rag_type must be one of {RAG_TYPE_CHOICES}")
 
 
-def run_react_lightrag(
+def run_react_lightrag_sync(
     query: str,
     conv_id: str,
     category: int,
@@ -387,29 +442,30 @@ def run_react_lightrag(
     benchmark: str = "locomo",
 ) -> dict:
     """
-    运行 ReAct + LightRAG 流水线。
+    运行 ReAct + LightRAG 流水线（async 版本，支持并发调度）。
+    同步入口请使用 run_react_lightrag()。
     返回: {answer, stopped_reason, steps, trajectory, final_query_queue}
     """
     if output_dir is None:
         output_dir = DEFAULT_OUTPUT_DIR
     os.makedirs(output_dir, exist_ok=True)
+    print(f"[global-llm] source={get_openai_config_source()}")
 
-    # longmemeval I,me,my 都要改写为 user 第三人称，与 RAG 索引中的 speaker 格式一致
     haystack_session_ids = None
     if benchmark == "longmemeval":
         query = _rewrite_first_person_to_user(query)
+        question_date = full_conv['question_date']
+        query = f"Today is {question_date}. {query}"
         haystack_session_ids = _get_haystack_session_ids(conv_id)
     root_query = query
     query_queue = [query]
-    short_memory: list[dict] = [] # 存对query的短期记忆
-    trajectory_memory: list[dict] = [] # 存对query的短期记忆
-    trajectory: list[dict] = [] 
+    short_memory: list[dict] = []
+    trajectory_memory: list[dict] = []
+    trajectory: list[dict] = []
     fail_queue_trajectory: list[dict] = []
     agent_flag = [c == "1" for c in agent_flag_str]
-    loop = _get_rag_event_loop()
     additional_information = add_category_information(category)
     conv_memory = []
-    # for agent 3
     interrupt_step = 3
     visual_seen_session = []
 
@@ -423,6 +479,7 @@ def run_react_lightrag(
             query_queue, conv_id, top_k=rag_top_k, rag_type=rag_type,
             working_dir=working_dir, rag=rag,
         )
+        assert len(rag_results) != 0
         
         if trajectory:
             last_observation = trajectory[-1].get("Observation") or {}
@@ -436,14 +493,13 @@ def run_react_lightrag(
         rag_record = []
         # ─── RAG View agent: 观察 rag_results，选出 useful_dia_ids，写 report ───
         if agent_flag[0]:
-            rag_view_result = rag_view_agent(
+            rag_view_result = rag_view_agent_with_cfg(
                 root_query=root_query,
                 query_queue=query_queue,
                 rag_results=rag_results,
                 last_thought_information=last_queries,
                 known_info_rag=short_memory,
                 model=model,
-                temperature=1.0,
                 benchmark=benchmark,
                 haystack_session_ids=haystack_session_ids,
             )
@@ -462,17 +518,18 @@ def run_react_lightrag(
         # ─── middle View agent: ───
         if agent_flag[1] and len(temp_useful_rag) > 0:
             K = middle_scale
-            middle_view_result = middle_view_agent(
+            middle_view_result = middle_view_agent_with_cfg(
                 root_query=root_query,
                 query_queue=query_queue,
                 temp_useful_rag=temp_useful_rag,
                 known_info_rag=short_memory,
                 model=model,
                 conv_id=conv_id,
-                K=K,
+                K=middle_scale,
                 temperature=0.0,
                 benchmark=benchmark,
                 haystack_session_ids=haystack_session_ids,
+                full_conv=full_conv
             )
             middle_dia = middle_view_result.get("useful_evidence", [])
             middle_view_thinking = middle_view_result.get("thinking", "")
@@ -491,7 +548,7 @@ def run_react_lightrag(
 
         # ─── visual_ocr_agent: ───
         if agent_flag[2] and benchmark != 'longmemeval':
-            visual_ocr_result = visual_ocr_agent(
+            visual_ocr_result = visual_ocr_agent_with_cfg(
                 root_query=root_query,
                 query_queue=query_queue,
                 temp_useful_rag=temp_useful_rag,
@@ -528,14 +585,18 @@ def run_react_lightrag(
         temp_useful_rag_dia_ids = [r.get("dia_id", "") for r in temp_useful_rag]
         act_record = {
             "step": step,
-            "query_queue": list(query_queue),
+            "query_queue": str(query_queue),
             "rag_record": rag_record,
             "temp_useful_rag_dia_ids": temp_useful_rag_dia_ids,
         }
 
         # ─── Observation ───给出是否能回答的结果
-        obs = observation_agent(query, temp_useful_rag,
-            short_memory, model, fail_queue_trajectory=fail_queue_trajectory, temperature=0.0, conv_memory=conv_memory, benchmark=benchmark, haystack_session_ids=haystack_session_ids)
+        obs = observation_agent_with_cfg(
+            query, temp_useful_rag, short_memory, model,
+            fail_queue_trajectory=fail_queue_trajectory,
+            temperature=0.0, conv_memory=[], benchmark=benchmark,
+            haystack_session_ids=haystack_session_ids
+        )
         useful_evidence = obs.get("useful_evidence", [])#TODO:这里可以做个知识更新
         new_queries = obs.get("new_queries", [])
         action = obs.get("action", [])
@@ -545,10 +606,6 @@ def run_react_lightrag(
                 if i['dia_id'] in useful_evidence and i['dia_id'] not in short_memory_dia_ids:#如果临时记忆有的，但是短期记忆没有的
                     short_memory.append(i)
                     fail_query_flag = False
-        # else:#减少new short memory
-        #     for i in short_memory:#遍历短期记忆
-        #         if i['dia_id'] not in useful_evidence:
-        #             short_memory.remove(i)
         print(f"No.{step}:")
         if fail_query_flag:
             fail_queue_trajectory.append({"last_action":last_action,"query_queue":query_queue,"rag_view_report":rag_view_missing_information})#TODO:判断真不能靠这个判断obs agent来判断
@@ -576,7 +633,9 @@ def run_react_lightrag(
         # ─── 机械判断 ───
         if obs["can_answer"] or step == max_step - 1:
             short_memory_dia_ids = [m.get("dia_id", "") for m in short_memory]
-            ans = answer_agent(query, short_memory, model=model, obs_report=obs_thinking, additional_information=additional_information, benchmark=benchmark, haystack_session_ids=haystack_session_ids)
+            ans = answer_agent_with_cfg(query, short_memory, model=model,
+                obs_report=obs_thinking, additional_information=additional_information,
+                benchmark=benchmark, haystack_session_ids=haystack_session_ids)
             if ans["answer"] != '':
                 answer = ans["answer"]
                 answer_thinking = ans["thinking"]
@@ -599,18 +658,17 @@ def run_react_lightrag(
         assert len(new_queries) != 0
         query_queue = new_queries
     short_memory_dia_ids = [m.get("dia_id", "") for m in short_memory]
-    # see_full_conv_flag = True
-    # if see_full_conv_flag:
-    assert full_conv != None
-    conv_view_result = conv_answer_agent(
+    conv_view_result = conv_answer_agent_with_cfg(
         root_query=root_query,
         model=model,
-        full_conv = full_conv,
+        full_conv=full_conv,
         temperature=0.0,
         benchmark=benchmark,
     )
     conv_view_answer = conv_view_result.get("answer", "")
     conv_view_thinking = conv_view_result.get("thinking", "")
+    if benchmark == 'longmemeval':
+        conv_view_answer = conv_view_thinking+" Answer is: "+ conv_view_answer
     ans = {
             "answer": conv_view_answer,
             "report": conv_view_thinking
@@ -631,9 +689,25 @@ def run_react_lightrag(
     print(f"Answer: {answer}")
     return result
 
-    # else:
-    #     ans = guess_answer_agent(query, short_memory, model=model, obs_report=obs_thinking,
-            # additional_information=additional_information)
+def run_react_lightrag(
+    query: str, conv_id: str, category: int, model: str = DEFAULT_MODEL,
+    output_dir: Optional[str] = None, max_step: int = MAX_LOOP_STEP,
+    rag_top_k: int = RAG_TOP_K, rag_type: str = RAG_TYPE_LIGHTRAG,
+    working_dir: str = None, agent_flag_str: str = DEFAULT_AGENT_FLAG,
+    middle_scale: int = 3, rag=None, full_conv=None, img_retriever=None,
+    benchmark: str = "locomo",
+) -> dict:
+    """Sync wrapper — delegates to run_react_lightrag_async via event-loop bridge."""
+    loop = _get_rag_event_loop()
+    return run_react_lightrag_sync(   # ← 新增一个 sync 函数，或者直接把下面内容粘贴
+        query=query, conv_id=conv_id, category=category, model=model,
+        output_dir=output_dir, max_step=max_step, rag_top_k=rag_top_k,
+        rag_type=rag_type, working_dir=working_dir,
+        agent_flag_str=agent_flag_str, middle_scale=middle_scale,
+        rag=rag, full_conv=full_conv, img_retriever=img_retriever,
+        benchmark=benchmark,
+    )
+
 
 def _save_json(data, path: str):
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
@@ -655,7 +729,7 @@ if __name__ == "__main__":
         help=f"RAG 类型: naive=向量检索(pkl@naiverag), lightrag=LightRAG 知识图谱 (default: {RAG_TYPE_LIGHTRAG})",
     )
     parser.add_argument(
-        "--rag-base",
+        "--lightrag-base",
         default=DEFAULT_LIGHTRAG_WORKING_BASE,
         help=f"LightRAG 索引根目录 (default: {DEFAULT_LIGHTRAG_WORKING_BASE})",
     )
@@ -689,7 +763,7 @@ if __name__ == "__main__":
     # 构建 working_dir
     conv_id = args.conv
     workspace = _conv_id_to_workspace(conv_id)
-    working_dir = os.path.join(args.rag_base, workspace)
+    working_dir = os.path.join(args.lightrag_base, workspace)
     print(f"working_dir: {working_dir}")
 
     # 载入 LightRAG（仅初始化一次，后续检索复用同一实例）
