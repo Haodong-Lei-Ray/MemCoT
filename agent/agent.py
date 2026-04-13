@@ -20,6 +20,7 @@ from .format_tool import fix_escape_chars
 from .prompt import rag_view_agent_prompt, \
     middle_view_agent_prompt, visual_ocr_agent_prompt, \
     observation_agent_prompt, answer_agent_prompt, conv_answer_agent_prompt
+from .conversation import Conversation
 # cache for conversation data
 _conversation_cache: dict = {}
 DATA_PATH = PROJECT_ROOT / "benchmark" / "locomo" / "data" / "locomo10.json"
@@ -37,7 +38,7 @@ _LONGMEMEVAL_DATE_FMT = "%Y/%m/%d (%a) %H:%M"
 def _estimate_input_tokens(text: str, model: str) -> int:
     """Estimate input token count for logging."""
     if not text:
-        return 0
+        number = 0
     try:
         import tiktoken
 
@@ -45,10 +46,11 @@ def _estimate_input_tokens(text: str, model: str) -> int:
             enc = tiktoken.encoding_for_model(model)
         except KeyError:
             enc = tiktoken.get_encoding("cl100k_base")
-        return len(enc.encode(text))
+        number =  len(enc.encode(text))
     except Exception:
         # Fallback heuristic when tokenizer lib/model mapping is unavailable.
-        return max(1, len(text) // 4)
+        number =  max(1, len(text) // 4)
+    print(f"[rag_view_agent] input_tokens={number}")
 
 
 def _parse_longmemeval_date(s: str):
@@ -205,6 +207,7 @@ def _parse_json_from_llm(text: str) -> dict | None:
         print(json_str)
         raise ValueError(f"Failed to parse JSON from LLM output.")
 
+
 # Agent
 class ZoomInFocalRetrieve:
     """RAG View：`model` / `temperature` 在构造时绑定，`run()` 不再接收这两项。"""
@@ -220,15 +223,15 @@ class ZoomInFocalRetrieve:
         rag_results: list[dict],
         last_thought_information: str,
         known_info_rag: list[dict],
-        benchmark: str = "locomo",
-        haystack_session_ids: list[str] | None = None,
+        conversation,
     ) -> dict:
         """
         RAG View agent: 观察 rag_results，选出 useful_dia_ids，并写 report。
         report 说明：(1) 为什么选用这些 useful_dia_ids；(2) 还缺什么信息；(3) 建议的新 query。
         返回 {useful_evidence: [...], report: "..."}
         """
-
+        benchmark = conversation.benchmark
+        haystack_session_ids = conversation.haystack_session_ids
         # 执行排序：locomo 按 Dx:y；longmemeval 按 date_time + session 序 + turn + chunk
         rag_results_sort = sorted(
             rag_results,
@@ -254,7 +257,6 @@ class ZoomInFocalRetrieve:
         while True:
             try_step -= 1
             try:
-                print(f"[rag_view_agent] input_tokens={_estimate_input_tokens(prompt, self.model)}")
                 resp = run_chatgpt(
                     prompt,
                     model=self.model,
@@ -278,228 +280,202 @@ class ZoomInFocalRetrieve:
             "missing_information": missing_information,
         }
 
+class ZoomOutContextExpansion:
+    def __init__(self, model: str, temperature: float = 0.0, middle_scale: int = 4):
+        self.model = model
+        self.temperature = temperature
+        self.W=middle_scale
 
-def get_context_window4locomo(
-    temp_useful_rag: list[dict], conv_id: str, K: int = 3,
-) -> tuple[list[str], list[dict]]:
-    """LoCoMo: 对每个 dia_id (Dx:y) 取所在 session 上下 K 条对话，返回 (context_blocks, rag_results)。"""
-    sessions: dict[str, dict] = {}
+    def get_context_window4locomo(
+        self, temp_useful_rag: list[dict], conv_id: str
+    ) -> tuple[list[str], list[dict]]:
+        """LoCoMo: 对每个 dia_id (Dx:y) 取所在 session 上下 self.W 条对话，返回 (context_blocks, rag_results)。"""
+        sessions: dict[str, dict] = {}
 
-    for item in temp_useful_rag:
-        dia_id = item.get("dia_id", "")
-        sess_prefix = dia_id.split(":")[0]
-        turn_num = int(dia_id.split(":")[1])
+        for item in temp_useful_rag:
+            dia_id = item.get("dia_id", "")
+            sess_prefix = dia_id.split(":")[0]
+            turn_num = int(dia_id.split(":")[1])
 
-        turns, date_time = _get_session_turns(conv_id, sess_prefix)
+            turns, date_time = _get_session_turns(conv_id, sess_prefix)
 
-        start = max(1, turn_num - K)
-        end = min(len(turns), turn_num + K)
-        window = turns[start - 1:end]
+            start = max(1, turn_num - self.W)
+            end = min(len(turns), turn_num + self.W)
+            window = turns[start - 1:end]
 
-        if sess_prefix not in sessions:
-            sessions[sess_prefix] = {"date_time": date_time, "turns": {}}
-        turn_map = sessions[sess_prefix]["turns"]
-        for t in window:
-            tid = t.get("dia_id", "")
-            if tid and tid not in turn_map:
-                turn_map[tid] = t
+            if sess_prefix not in sessions:
+                sessions[sess_prefix] = {"date_time": date_time, "turns": {}}
+            turn_map = sessions[sess_prefix]["turns"]
+            for t in window:
+                tid = t.get("dia_id", "")
+                if tid and tid not in turn_map:
+                    turn_map[tid] = t
 
-    context_blocks = []
-    all_window_turns = []
-    dia_id_list = []
-    idx_i = 0
-    rag_results = []
-    for sess_prefix, info in sorted(sessions.items()):
-        sorted_turns = sorted(info["turns"].values(),
-                              key=lambda t: int(t["dia_id"].split(":")[1]) if ":" in t.get("dia_id", "") else 0)
-        all_window_turns.extend(sorted_turns)
-        date_time = info['date_time']
-        lines = [f"Session {sess_prefix} (date_time: {date_time}):"]
-        for t in sorted_turns:
-            lines.append(f'{idx_i}: {t.get("speaker", "Unknown")}: "{t.get("text", "")}')
-            dia_id_list.append(t["dia_id"])
-            rag_item = {
-                "dia_id": t["dia_id"],
-                "date_time": date_time,
-                "context": f'{t.get("speaker", "Unknown")} said, {t.get("text", "")}'
-            }
-            rag_results.append(rag_item)
-            idx_i += 1
-        context_blocks.append("\n".join(lines))
+        context_blocks = []
+        all_window_turns = []
+        dia_id_list = []
+        idx_i = 0
+        rag_results = []
+        for sess_prefix, info in sorted(sessions.items()):
+            sorted_turns = sorted(info["turns"].values(),
+                                key=lambda t: int(t["dia_id"].split(":")[1]) if ":" in t.get("dia_id", "") else 0)
+            all_window_turns.extend(sorted_turns)
+            date_time = info['date_time']
+            lines = [f"Session {sess_prefix} (date_time: {date_time}):"]
+            for t in sorted_turns:
+                lines.append(f'{idx_i}: {t.get("speaker", "Unknown")}: "{t.get("text", "")}')
+                dia_id_list.append(t["dia_id"])
+                rag_item = {
+                    "dia_id": t["dia_id"],
+                    "date_time": date_time,
+                    "context": f'{t.get("speaker", "Unknown")} said, {t.get("text", "")}'
+                }
+                rag_results.append(rag_item)
+                idx_i += 1
+            context_blocks.append("\n".join(lines))
 
-    return context_blocks, rag_results
+        return context_blocks, rag_results
 
 
-def get_context_window4longmemeval(
-    temp_useful_rag: list[dict],
-    conv_id: str,
-    haystack_session_ids: list[str],
-    full_conv: list[dict],
-    K: int = 3,
-) -> tuple[list[str], list[dict]]:
-    """LongMemEval: 对每个 dia_id ({sess_id}_{turn}[_c{chunk}]) 取所在 session 上下 K 条对话。
+    def get_context_window4longmemeval(
+        self,
+        temp_useful_rag: list[dict],
+        conv_id: str,
+        haystack_session_ids: list[str],
+        full_conv: dict,
+    ) -> tuple[list[str], list[dict]]:
+        """LongMemEval: 对每个 dia_id ({sess_id}_{turn}[_c{chunk}]) 取所在 session 上下 self.W 条对话。
+        以 turn 为单位，在同一 session 内取命中 turn 前后各 self.W 个 turn 作为上下文窗口。
+        返回 (context_blocks, rag_results)。
+        """
+        entry = full_conv
+        all_sessions = entry.get("haystack_sessions", [])
+        all_dates = entry.get("haystack_dates", [])
 
-    以 turn 为单位，在同一 session 内取命中 turn 前后各 K 个 turn 作为上下文窗口。
-    返回 (context_blocks, rag_results)。
-    """
-    entry = full_conv
-    all_sessions = entry.get("haystack_sessions", [])
-    all_dates = entry.get("haystack_dates", [])
+        # sess_idx -> {"date_time", "sess_id", "turns": {turn_0based: turn_dict}}
+        sessions: dict[int, dict] = {}
 
-    # sess_idx -> {"date_time", "sess_id", "turns": {turn_0based: turn_dict}}
-    sessions: dict[int, dict] = {}
+        for item in temp_useful_rag:
+            dia_id = item.get("dia_id", "")
+            sess_idx, turn_id, _chunk_id = _parse_longmemeval_dia_id(dia_id, haystack_session_ids)
+            if sess_idx < 0 or sess_idx >= len(all_sessions):
+                continue
+            session = all_sessions[sess_idx]
+            if not isinstance(session, list) or len(session) == 0:
+                continue
+            date_time = all_dates[sess_idx] if sess_idx < len(all_dates) else ""
 
-    for item in temp_useful_rag:
-        dia_id = item.get("dia_id", "")
-        sess_idx, turn_id, _chunk_id = _parse_longmemeval_dia_id(dia_id, haystack_session_ids)
-        if sess_idx < 0 or sess_idx >= len(all_sessions):
-            continue
-        session = all_sessions[sess_idx]
-        if not isinstance(session, list) or len(session) == 0:
-            continue
-        date_time = all_dates[sess_idx] if sess_idx < len(all_dates) else ""
+            # dia_id 中 turn_id 约定为 1-based；窗口计算需转为 0-based
+            if turn_id <= 0:
+                continue
+            center_idx = min(max(turn_id - 1, 0), len(session) - 1)
+            start_t = max(0, center_idx - self.W)
+            end_t = min(len(session), center_idx + self.W + 1)
 
-        # dia_id 中 turn_id 约定为 1-based；窗口计算需转为 0-based
-        if turn_id <= 0:
-            continue
-        center_idx = min(max(turn_id - 1, 0), len(session) - 1)
-        start_t = max(0, center_idx - K)
-        end_t = min(len(session), center_idx + K + 1)
+            if sess_idx not in sessions:
+                sess_id = (
+                    haystack_session_ids[sess_idx]
+                    if sess_idx < len(haystack_session_ids)
+                    else str(sess_idx)
+                )
+                sessions[sess_idx] = {
+                    "date_time": date_time,
+                    "sess_id": sess_id,
+                    "turns": {},
+                }
+            turn_map = sessions[sess_idx]["turns"]
+            for ti in range(start_t, end_t):
+                if ti not in turn_map:
+                    turn_map[ti] = session[ti]
 
-        if sess_idx not in sessions:
-            sess_id = (
-                haystack_session_ids[sess_idx]
-                if sess_idx < len(haystack_session_ids)
-                else str(sess_idx)
+        context_blocks = []
+        idx_i = 0
+        rag_results = []
+        for sess_idx in sorted(sessions.keys()):
+            info = sessions[sess_idx]
+            date_time = info["date_time"]
+            sess_id = info["sess_id"]
+            lines = [f"Session {sess_id} (date_time: {date_time}):"]
+            for ti in sorted(info["turns"].keys()):
+                t = info["turns"][ti]
+                role = t.get("role", "user")
+                content = str(t.get("content", "")).strip()
+                turn_dia_id = f"{sess_id}_{ti + 1}"  # 1-based，与 buildrag 一致
+                lines.append(f'{idx_i}: {role}: "{content}"')
+                rag_results.append({
+                    "dia_id": turn_dia_id,
+                    "date_time": date_time,
+                    "context": f'{role} said, "{content}"',
+                })
+                idx_i += 1
+            context_blocks.append("\n".join(lines))
+
+        return context_blocks, rag_results
+
+    def run(
+        self,
+        root_query: str,
+        query_queue: list[str],
+        temp_short_memory: list[dict],
+        known_info_rag: list[dict],
+        conversation,
+    ) -> dict:
+        """
+        Middle View：`model` / `temperature` / 窗口 `self.W` 由 `__init__` 绑定；本方法只接逐步上下文。
+        返回 {"useful_evidence": [...], "thinking": "...", "missing_information": "..."}
+        """
+        conv_id = conversation.conv_id
+        benchmark = conversation.benchmark
+        haystack_session_ids = conversation.haystack_session_ids
+        full_conv = conversation.full_conv
+
+        if benchmark == "locomo":
+            context_blocks, rag_results = self.get_context_window4locomo(
+                temp_short_memory, conv_id
             )
-            sessions[sess_idx] = {
-                "date_time": date_time,
-                "sess_id": sess_id,
-                "turns": {},
-            }
-        turn_map = sessions[sess_idx]["turns"]
-        for ti in range(start_t, end_t):
-            if ti not in turn_map:
-                turn_map[ti] = session[ti]
-
-    context_blocks = []
-    idx_i = 0
-    rag_results = []
-    for sess_idx in sorted(sessions.keys()):
-        info = sessions[sess_idx]
-        date_time = info["date_time"]
-        sess_id = info["sess_id"]
-        lines = [f"Session {sess_id} (date_time: {date_time}):"]
-        for ti in sorted(info["turns"].keys()):
-            t = info["turns"][ti]
-            role = t.get("role", "user")
-            content = str(t.get("content", "")).strip()
-            turn_dia_id = f"{sess_id}_{ti + 1}"  # 1-based，与 buildrag 一致
-            lines.append(f'{idx_i}: {role}: "{content}"')
-            rag_results.append({
-                "dia_id": turn_dia_id,
-                "date_time": date_time,
-                "context": f'{role} said, "{content}"',
-            })
-            idx_i += 1
-        context_blocks.append("\n".join(lines))
-
-    return context_blocks, rag_results
-
-
-def zoom_out_context_expansion_agent(
-    root_query: str,
-    query_queue: list[str],
-    temp_useful_rag: list[dict],
-    known_info_rag: list[dict],
-    model: str,
-    conv_id: str = "conv-26",
-    K: int = 3,
-    temperature: float = 0.0,
-    benchmark: str = "locomo",
-    haystack_session_ids: list[str] | None = None,
-    full_conv = None
-) -> dict:
-    """
-    Middle View agent: 对 temp_useful_rag 中每个 dia_id，取其所在 session 中上下 K 条对话，
-    组成 middle context window，让 LLM 判断哪些对回答 query 有用。
-    返回 {"useful_evidence": [...], "thinking": "...", "missing_information": "..."}
-    """
-    if benchmark == "locomo":
-        context_blocks, rag_results = get_context_window4locomo(temp_useful_rag, conv_id, K)
-    elif benchmark == "longmemeval":
-        context_blocks, rag_results = get_context_window4longmemeval(
-            temp_useful_rag, conv_id, haystack_session_ids or [], full_conv=full_conv, K=K
-        )
-    else:
-        raise ValueError(f"Invalid benchmark: {benchmark}")
-    middle_context_text = "\n\n".join(context_blocks)
-    search_query = query_queue if query_queue else root_query
-    query_information = f'root_query: {root_query}' if root_query == search_query else f'root_query: {root_query}\nsearch_query: {search_query}'
-
-    known_info_rag_sort = sorted(
-        known_info_rag,
-        key=lambda x: get_sort_key(x, benchmark, haystack_session_ids=haystack_session_ids),
-    )
-    known_info_text, _ = _format_short_memory_for_prompt(
-        known_info_rag_sort, benchmark, haystack_session_ids=haystack_session_ids
-    )
-    known_information = f'Known information: {known_info_text}' if known_info_text else ''
-
-    prompt = middle_view_agent_prompt(query_information, known_information,middle_context_text,benchmark)
-    print(f"[middle_view_agent] input_tokens={_estimate_input_tokens(prompt, model)}")
-    resp = run_chatgpt(prompt, model=model, num_tokens_request=1024, temperature=temperature)
-    out = _parse_json_from_llm(resp)
-    num_ids = out.get("useful_ids", [])
-    num_ids = [int(i) if isinstance(i, str) else i for i in num_ids]
-    ids = [rag_results[i] for i in num_ids] if len(num_ids) != 0 else []
-    thinking = out.get("thinking")
-    # thinking_choice = out.get("thinking_choice")
-    missing_information = out.get("missing_information")
-    
-    return {
-        "useful_evidence": ids,
-        "thinking": thinking,
-        "missing_information": missing_information,
-    }
-
-def _build_full_conv_context(conv_id: str) -> str:
-    """将完整对话格式化为带日期的上下文文本，格式与 gpt_utils.get_input_context 一致。"""
-    if conv_id not in _conversation_cache:
-        conv_file = CONV_DIR / f"{conv_id}.json"
-        if conv_file.exists():
-            with open(conv_file, "r", encoding="utf-8") as f:
-                _conversation_cache[conv_id] = json.load(f)
+        elif benchmark == "longmemeval":
+            context_blocks, rag_results = self.get_context_window4longmemeval(
+                temp_short_memory,
+                conv_id,
+                haystack_session_ids or [],
+                full_conv=full_conv,
+            )
         else:
-            raise FileNotFoundError(f"Conversation file not found: {conv_file}")
+            raise ValueError(f"Invalid benchmark: {benchmark}")
+        middle_context_text = "\n\n".join(context_blocks)
+        search_query = query_queue if query_queue else root_query
+        query_information = f'root_query: {root_query}' if root_query == search_query else f'root_query: {root_query}\nsearch_query: {search_query}'
 
-    conv = _conversation_cache[conv_id]
-    speaker_a = conv.get("speaker_a", "Speaker A")
-    speaker_b = conv.get("speaker_b", "Speaker B")
-    start_prompt = CONV_START_PROMPT.format(speaker_a, speaker_b)
+        known_info_rag_sort = sorted(
+            known_info_rag,
+            key=lambda x: get_sort_key(x, benchmark, haystack_session_ids=haystack_session_ids),
+        )
+        known_info_text, _ = _format_short_memory_for_prompt(
+            known_info_rag_sort, benchmark, haystack_session_ids=haystack_session_ids
+        )
+        known_information = f'Known information: {known_info_text}' if known_info_text else ''
 
-    session_nums = sorted(
-        int(k.split("_")[1]) for k in conv.keys()
-        if k.startswith("session_") and "date_time" not in k
-    )
-    session_nums = [n for n in session_nums if conv.get(f"session_{n}", [])]
-    blocks = []
-    for n in session_nums:
-        date_time = conv.get(f"session_{n}_date_time", "")
-        dialogs = conv.get(f"session_{n}", [])
-        if not dialogs:
-            continue
-        lines = []
-        for d in dialogs:
-            turn = d["speaker"] + ' said, "' + d["text"] + '"'
-            if "blip_caption" in d:
-                turn += " and shared %s." % d["blip_caption"]
-            lines.append(turn)
-        block = "DATE: " + date_time + "\nCONVERSATION:\n" + "\n".join(lines)
-        blocks.append(block)
-
-    return start_prompt + "\n\n".join(blocks)
-
+        prompt = middle_view_agent_prompt(query_information, known_information,middle_context_text,benchmark)
+        _estimate_input_tokens(prompt, self.model)
+        resp = run_chatgpt(
+            prompt,
+            model=self.model,
+            num_tokens_request=1024,
+            temperature=self.temperature,
+        )
+        out = _parse_json_from_llm(resp)
+        num_ids = out.get("useful_ids", [])
+        num_ids = [int(i) if isinstance(i, str) else i for i in num_ids]
+        ids = [rag_results[i] for i in num_ids] if len(num_ids) != 0 else []
+        thinking = out.get("thinking")
+        # thinking_choice = out.get("thinking_choice")
+        missing_information = out.get("missing_information")
+        
+        return {
+            "useful_evidence": ids,
+            "thinking": thinking,
+            "missing_information": missing_information,
+        }
 
 # LongMemEval benchmark: dataset per question, conv_id = "{idx:04d}_{question_id}" e.g. "0000_e47becba"
 LONGMEMEVAL_DATASET_DIR = PROJECT_ROOT / "benchmark" / "LongMemEval" / "dataset"
@@ -507,50 +483,6 @@ LONGMEMEVAL_FORMAT_HISTORY = (
     PROJECT_ROOT / "module_unit" / "LongMemEval" / "src" / "generation" / "format_history.py"
 )
 _format_history_for_prompt_fn = None
-
-
-def _get_format_history_for_prompt():
-    """延迟加载 format_history.format_history_for_prompt（run_generation 风格，con=False）。"""
-    global _format_history_for_prompt_fn
-    if _format_history_for_prompt_fn is None:
-        spec = importlib.util.spec_from_file_location(
-            "format_history", LONGMEMEVAL_FORMAT_HISTORY
-        )
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        _format_history_for_prompt_fn = mod.format_history_for_prompt
-    return _format_history_for_prompt_fn
-
-
-def _get_haystack_session_ids(conv_id: str) -> list[str]:
-    """从 LongMemEval 单题 JSON 载入 haystack_session_ids，用于 get_sort_key 排序。"""
-    cache_key = conv_id
-    if cache_key not in _conversation_cache:
-        conv_file = LONGMEMEVAL_DATASET_DIR / f"{conv_id}.json"
-        with open(conv_file, "r", encoding="utf-8") as f:
-            _conversation_cache[cache_key] = json.load(f)
-    return _conversation_cache[cache_key].get("haystack_session_ids", [])
-
-
-def _build_full_conv_context_longmemeval(conv_id: str) -> str:
-    """载入 LongMemEval 单题 haystack 为全文上下文，复用 run_generation 的载入格式。
-
-    使用 run_generation.format_history_for_prompt（con=False），输出格式为：
-    ### Session {n}:
-    Session Date: {date}
-    Session Content:
-    {role}: {content}
-    """
-    cache_key = conv_id
-    if cache_key not in _conversation_cache:
-        conv_file = LONGMEMEVAL_DATASET_DIR / f"{conv_id}.json"
-        with open(conv_file, "r", encoding="utf-8") as f:
-            _conversation_cache[cache_key] = json.load(f)
-
-    item = _conversation_cache[cache_key]
-    fmt_fn = _get_format_history_for_prompt()
-    return fmt_fn(item, max_sessions=None)
-
 
 RELATIONSHIP_DIR = PROJECT_ROOT / "module_version" / "version2" / "tool" / "related3"
 
@@ -614,7 +546,7 @@ def _is_multimodal_model(model: str) -> bool:
 def panoramic_visual_grounding(
     root_query: str,
     query_queue: list,
-    temp_useful_rag: list,
+    temp_short_memory: list,
     known_info_rag: list,
     model: str,
     conv_id: str,
@@ -641,7 +573,7 @@ def panoramic_visual_grounding(
     total_sessions = _get_total_sessions(conv_id)
 
     # D': 从已知信息中提取涉及的 session 编号
-    all_known = (temp_useful_rag or []) + (known_info_rag or [])
+    all_known = (temp_short_memory or []) + (known_info_rag or [])
     d_prime = _extract_session_nums(all_known)
 
     # 计算 D+
@@ -691,9 +623,9 @@ def panoramic_visual_grounding(
     known_information = f"Known information:\n{known_info_text}" if known_info_text else ""
 
     rag_info_text = ""
-    if temp_useful_rag:
+    if temp_short_memory:
         rag_sort = sorted(
-            temp_useful_rag,
+            temp_short_memory,
             key=lambda x: get_sort_key(x, benchmark, haystack_session_ids=haystack_session_ids),
         )
         rag_info_list, rag_dia_id_list = _format_short_rag_for_prompt(rag_sort)
@@ -749,100 +681,128 @@ def panoramic_visual_grounding(
     }
 
 # function agent
-OBS_Q = r"""Query: {query}
-{short_memory_text}
-{conv_memory_text}
-{fail_queue_information}
-Output a JSON object: 
-1.Based on the above context, write an answer in the form of a short phrase for the following question and a thinking. Answer with exact words from the context whenever possible. {thinking}. 
-2.useful_id: List of dia_id strings from the useful results (e.g. [0, 2]). If can_answer, include those that support the answer. If not, include those with relevant partial info.
-3.can_answer: true if the results contain enough information to answer the query, false otherwise. You can not say"No information available".
-4.action: Check the **Fail query**. You can Choose only one action to generate for each new query:
-    1. Break: Break down last query into sub-queries to get shorter but more exact query. if Q=[Q_A,Q_B], you can just searcg Q_A firstly. Example: When Tom arrive at Shanghai for 3 years ago-> [Tom arrive at Shanghai,3 years ago]
-    2. Delete: If Root Query Q = [Q_A,Q_B] and Short Memory include Q_A, focus on Q_B and New query Q'=Q-Q_A.
-    3. Nothing: Due to can_answer == True, so you do not to change
-    Do not let new_queries as same as and Fail query.
-    You can try more type action to avoid to me the same fail query.
-5.new_queries: If can_answer is false, suggest {queries_num} new queries that are more likely to retrieve the missing information. These should be focused and based on the gaps identified in the report.
-
-Output ONLY valid JSON."""
-
 WRONG_LIST = ['No information available', 'unknown']
-def judge_agent(query: str, temp_useful_rag: list[dict], short_memory: list[dict], model: str, fail_queue_trajectory: list[str], temperature: int, conv_memory: list[str], benchmark: str = "locomo", haystack_session_ids: list[str] | None = None) -> dict:
-    """
-    Observation: 用 query 比对 RAG 结果（含原文对话，便于推断时间等）。
-    返回: {can_answer: bool, answer: str, useful_indices: [0,1,...]}  # indices 为可能有效的 RAG 序号(1-based)
-    """
-    queries_num=1
-    rag_results_sort = sorted(
-        temp_useful_rag + short_memory,
-        key=lambda x: get_sort_key(x, benchmark, haystack_session_ids=haystack_session_ids),
-    )
-    temp_useful, dia_id_list = _format_short_rag_for_prompt(rag_results_sort)
-    fail_queue_information = "Fail query:\n" + "\n".join(
-        f"No.{i} last_action: {x['last_action']} Query_queue: {str(x['query_queue'])} Rag think: {str(x['rag_view_report'])} \n" for i, x in enumerate(fail_queue_trajectory)) if fail_queue_trajectory else ''
-    fail_queue = []
-    for data in fail_queue_trajectory:
-        fail_queue.extend(data['query_queue'])
-    # fail_queue_information = "Fail query:\n" + "\n".join(
-    #     f"No.{i} {x['last_action']} Query_queue: {str(x['query_queue'])}\n" for i, x in enumerate(fail_queue_trajectory)) if fail_queue_trajectory else ''
-    
-    short_memory_text = "Short Memory:"+'\n'+"\n".join(temp_useful)
-    if not temp_useful_rag:# 没有搜到任何有用的信息
-        fail_queue_information += "\nNo useful information provided. Please strongly update your query. Do not let new_queries as same as and Fail query or Query!!"
-    if conv_memory:
-        conv_memory_text = "Full Conversation Memory:"+'\n'+"\n".join(conv_memory)
-        thinking = 'thinking: Check the Short Memory. Think about each item connection and relevant. If you cannot answer, please refer to the Full Conversation Memory, then use this information to construct new_queries to locate the correct information.'
-    else:
-        conv_memory_text = ''
-        thinking = 'thinking: Check the Short Memory. Think about each item connection and relevant.'
-    prompt = observation_agent_prompt(fail_queue_information, query,short_memory_text,conv_memory_text,thinking,queries_num,benchmark)
-    
-# 3. Nothing: Due to can_answer == True, so you do not to change
-    repeat_flag = True
-    step = 5
-    while repeat_flag:
-        step-=1
-        print(f"[observation_agent] input_tokens={_estimate_input_tokens(prompt, model)}")
-        resp = run_chatgpt(prompt, model=model, num_tokens_request=1024, temperature=temperature)
-        out = _parse_json_from_llm(resp)
-        new_queries = out.get("new_queries")
-        can_answer = bool(out.get("can_answer", False))
-        if can_answer and new_queries is None:
-            new_queries = "None"
-        if new_queries is not None and isinstance(new_queries, list):
-            new_queries = new_queries[:2]
-        if isinstance(new_queries, str):
-            if new_queries not in fail_queue:
-                repeat_flag=False
-        elif not set(new_queries).issubset(set(fail_queue)):
-            repeat_flag=False
-        elif can_answer:
-            repeat_flag=False
+
+class JudgeAgent:
+    """Observation：比对 query 与 RAG/短期记忆；`model` / 初始 `temperature` 在构造时绑定。"""
+
+    def __init__(self, model: str, temperature: float = 0.0):
+        self.model = model
+        self.temperature = temperature
+
+    def run(
+        self,
+        query: str,
+        conversation: Conversation,
+        temp_useful_rag: list[dict],
+        short_memory: list[dict],
+        fail_queue_trajectory: list,
+        conv_memory: list[str] | None = None,
+    ) -> dict:
+        """
+        返回: useful_evidence, can_answer, action, new_queries, thinking
+        """
+        benchmark = conversation.benchmark
+        haystack_session_ids = conversation.haystack_session_ids
+
+        queries_num = 1
+        rag_results_sort = sorted(
+            temp_useful_rag + short_memory,
+            key=lambda x: get_sort_key(x, benchmark, haystack_session_ids=haystack_session_ids),
+        )
+        temp_useful, dia_id_list = _format_short_rag_for_prompt(rag_results_sort)
+        fail_queue_information = "Fail query:\n" + "\n".join(
+            f"No.{i} last_action: {x['last_action']} Query_queue: {str(x['query_queue'])} Rag think: {str(x['rag_view_report'])} \n"
+            for i, x in enumerate(fail_queue_trajectory)
+        ) if fail_queue_trajectory else ""
+        fail_queue = []
+        for data in fail_queue_trajectory:
+            fail_queue.extend(data["query_queue"])
+
+        short_memory_text = "Short Memory:" + "\n" + "\n".join(temp_useful)
+        if not temp_useful_rag:
+            fail_queue_information += (
+                "\nNo useful information provided. Please strongly update your query. "
+                "Do not let new_queries as same as and Fail query or Query!!"
+            )
+        if conv_memory:
+            conv_memory_text = "Full Conversation Memory:" + "\n" + "\n".join(conv_memory)
+            thinking = (
+                "thinking: Check the Short Memory. Think about each item connection and relevant. "
+                "If you cannot answer, please refer to the Full Conversation Memory, then use this "
+                "information to construct new_queries to locate the correct information."
+            )
         else:
-            print(f"Repeat!!!!! {new_queries}")
-            prompt += f"\nnIMPORTANT: You can just break query as the only one **keywords or some phases**."
-        if step in [2,1]:
-            prompt += f"\nIMPORTANT: Change this new_queries. You can just break query as the only one **words or a phase**. Like old query=(What/When...)+keyword1+keyword2. new_queries=[\"keyword1\"]. The query could be declarative sentence."
-        temperature += 0.5
-        temperature = max(temperature,1)
-        if step <= 0:
-            raise ValueError("Bug: new_queries == []")
-    num_ids = out.get("useful_id", [])
-    num_ids = [int(i) if isinstance(i, str) else i for i in num_ids]
-    
-    thinking = out.get("thinking")
-    if len(num_ids) >0 and max(num_ids) >= len(dia_id_list):
-        useful_evidence = dia_id_list
-    else:
-        useful_evidence = [dia_id_list[i] for i in num_ids] if len(num_ids) != 0 else []
-    return {
-        "thinking": thinking,
-        "useful_evidence": useful_evidence,
-        "can_answer": can_answer,
-        "action": out.get("action"),
-        "new_queries": new_queries,
-    }
+            conv_memory_text = ""
+            thinking = (
+                "thinking: Check the Short Memory. Think about each item connection and relevant."
+            )
+        prompt = observation_agent_prompt(
+            fail_queue_information,
+            query,
+            short_memory_text,
+            conv_memory_text,
+            thinking,
+            queries_num,
+            benchmark,
+        )
+
+        repeat_flag = True
+        step = 5
+        t = self.temperature
+        while repeat_flag:
+            step -= 1
+            _estimate_input_tokens(prompt, self.model)
+            resp = run_chatgpt(
+                prompt,
+                model=self.model,
+                num_tokens_request=1024,
+                temperature=t,
+            )
+            out = _parse_json_from_llm(resp)
+            new_queries = out.get("new_queries")
+            can_answer = bool(out.get("can_answer", False))
+            if can_answer and new_queries is None:
+                new_queries = "None"
+            if new_queries is not None and isinstance(new_queries, list):
+                new_queries = new_queries[:2]
+            if isinstance(new_queries, str):
+                if new_queries not in fail_queue:
+                    repeat_flag = False
+            elif not set(new_queries).issubset(set(fail_queue)):
+                repeat_flag = False
+            elif can_answer:
+                repeat_flag = False
+            else:
+                print(f"Repeat!!!!! {new_queries}")
+                prompt += (
+                    "\nnIMPORTANT: You can just break query as the only one **keywords or some phases**."
+                )
+            if step in [2, 1]:
+                prompt += (
+                    "\nIMPORTANT: Change this new_queries. You can just break query as the only one "
+                    '**words or a phase**. Like old query=(What/When...)+keyword1+keyword2. '
+                    'new_queries=["keyword1"]. The query could be declarative sentence.'
+                )
+            t += 0.5
+            t = max(t, 1.0)
+            if step <= 0:
+                raise ValueError("Bug: new_queries == []")
+        num_ids = out.get("useful_id", [])
+        num_ids = [int(i) if isinstance(i, str) else i for i in num_ids]
+
+        thinking = out.get("thinking")
+        if len(num_ids) > 0 and max(num_ids) >= len(dia_id_list):
+            useful_evidence = dia_id_list
+        else:
+            useful_evidence = [dia_id_list[i] for i in num_ids] if len(num_ids) != 0 else []
+        return {
+            "thinking": thinking,
+            "useful_evidence": useful_evidence,
+            "can_answer": can_answer,
+            "action": out.get("action"),
+            "new_queries": new_queries,
+        }
 
 def answer_agent(query: str, short_memory: list[dict], obs_report: str, model: str, additional_information: str = "", benchmark: str = "locomo", haystack_session_ids: list[str] | None = None) -> dict:
     """
@@ -947,11 +907,13 @@ def return_answer_agent_prompt(
     query: str,
     short_memory: list[dict],
     obs_report: str,
+    conversation,
     additional_information: str = "",
-    benchmark: str = "locomo",
-    haystack_session_ids: list[str] | None = None,
 ) -> str:
     """仅构造 answer_agent 所用 prompt（不调用 LLM）。返回 prompt 字符串。"""
+    benchmark = conversation.benchmark
+    haystack_session_ids = conversation.haystack_session_ids
+
     rag_results_sort = sorted(
         short_memory,
         key=lambda x: get_sort_key(x, benchmark, haystack_session_ids=haystack_session_ids),
@@ -966,8 +928,9 @@ def return_answer_agent_prompt(
 
 def return_conv_answer_agent_prompt(
     root_query: str,
-    full_conv: str,
-    benchmark: str = "locomo",
+    conversation,
 ) -> str:
     """仅构造 conv_answer_agent 所用 prompt（不调用 LLM）。"""
+    full_conv = conversation.full_conv
+    benchmark = conversation.benchmark
     return conv_answer_agent_prompt(full_conv, root_query, benchmark)

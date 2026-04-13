@@ -1,0 +1,6 @@
+{
+    "agent_flag": "110",
+    "max_step": 10,
+    "middle_scale": 4,
+    "img_index_base": "/mnt/petrelfs/leihaodong/ICML/exp/memory/img_mem/vit_rag"
+}

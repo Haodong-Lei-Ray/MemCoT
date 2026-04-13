@@ -1,5 +1,5 @@
 def rag_view_agent_prompt(query_information, known_information,rag_results_text,benchmark):
-    if benchmark == 'locomo':
+    if benchmark == 'locomo' or benchmark == 'openclaw':
         prompt = f"""
 {query_information}
 {known_information}
@@ -44,7 +44,7 @@ Output ONLY valid JSON."""
     return prompt
 
 def middle_view_agent_prompt(query_information, known_information,middle_context_text,benchmark):
-    if benchmark == 'locomo':
+    if benchmark == 'locomo' or benchmark == 'openclaw':
         prompt = f"""
 {query_information}
 {known_information}
@@ -89,7 +89,7 @@ Output ONLY valid JSON."""
     return prompt
 
 def visual_ocr_agent_prompt(query_information, known_information,rag_information,session_list_str,benchmark):
-    if benchmark == 'locomo':
+    if benchmark == 'locomo' or benchmark == 'openclaw':
         prompt =f"""{query_information}
 {known_information}
 {rag_information}
@@ -115,7 +115,7 @@ Output ONLY valid JSON."""
     return prompt
 
 def observation_agent_prompt(fail_queue_information, query,short_memory_text,conv_memory_text,thinking,queries_num,benchmark):
-    if benchmark == 'locomo':
+    if benchmark == 'locomo' or benchmark == 'openclaw':
         prompt =f"""
 {fail_queue_information}
 Query: {query}
@@ -173,7 +173,7 @@ Output ONLY valid JSON."""
 
 
 def answer_agent_prompt(additional_information_text, short_memory_text, query,benchmark):
-    if benchmark == 'locomo':
+    if benchmark == 'locomo' or benchmark == 'openclaw':
         prompt =f"""
 CRITICAL RULES:
 1. Ultra-Concise Answer: The "answer" MUST be an extremely short entity, number, or absolute date.
@@ -210,7 +210,7 @@ import tiktoken
 TOKENIZER = tiktoken.get_encoding("cl100k_base")
 
 def conv_answer_agent_prompt(full_conv, query, benchmark):
-    if benchmark == 'locomo':
+    if benchmark == 'locomo' or benchmark == 'openclaw':
         full_conv_text = full_conv
         prompt = full_conv_text + "\n\n" + QA_PROMPT.format(query)
     elif benchmark == 'longmemeval':

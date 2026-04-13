@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import pickle
 import sys
 import time
 from pathlib import Path
@@ -46,47 +47,78 @@ def _get_chunk_id_to_doc_id(working_dir: str) -> dict:
     }
 
 
-async def _lightrag_retrieve_async(
-    query: str,
-    conv_id: str,
-    top_k: int = RAG_TOP_K,
-    working_dir: str = None,
-    rag=None,
-) -> list[dict]:
-    """LightRAG aquery_data 检索。返回 [{dia_id, date_time, context, score, from_query}, ...]"""
-    if rag is None:
-        raise ValueError("rag instance must be provided")
-    if working_dir is None:
-        raise ValueError("working_dir must be provided")
+class LightRagRetriever:
+    """LightRAG 单次检索配置：`top_k`、`working_dir`、已初始化的 `rag` 实例与 `QueryParam`。"""
 
-    from lightrag import QueryParam
+    def __init__(self, working_dir: str, rag, top_k: int = RAG_TOP_K):
+        if working_dir is None:
+            raise ValueError("working_dir must be provided")
+        self.working_dir = working_dir
+        self.rag_type='lightrag'
+        self.top_k = top_k
+        self.light_rag = rag
+        from lightrag import QueryParam
+        self.param = QueryParam(mode="hybrid", top_k=top_k, chunk_top_k=top_k)
+    
+    async def _lightrag_retrieve_async(
+        self,
+        query: str,
+    ) -> list[dict]:
+        """LightRAG aquery_data 检索。返回 [{dia_id, date_time, context, score, from_query}, ...]"""
+        working_dir = self.working_dir
+        light_rag = self.light_rag
+        if light_rag is None:
+            raise ValueError("rag instance must be provided")
 
-    param = QueryParam(mode="hybrid", top_k=top_k, chunk_top_k=top_k)
-    result = await rag.aquery_data(query, param)
+        result = await light_rag.aquery_data(query, self.param)
 
-    if result.get("status") != "success" or not result.get("data", {}).get("chunks"):
-        return []
+        if result.get("status") != "success" or not result.get("data", {}).get("chunks"):
+            return []
 
-    chunks = result["data"]["chunks"]
-    chunk_id_to_doc = _get_chunk_id_to_doc_id(working_dir)
-    results = []
-    for i, c in enumerate(chunks):
-        chunk_id = c.get("chunk_id", "")
-        dia_id = chunk_id_to_doc.get(chunk_id, chunk_id)
-        date_time = c.get("file_path", "")
-        context = c.get("content", "")
-        score = 1.0 - (i * 0.01)
-        results.append(
-            {
-                "dia_id": dia_id,
-                "date_time": date_time,
-                "context": context,
-                "score": float(score),
-                "from_query": query,
-            }
-        )
-    return results
+        chunks = result["data"]["chunks"]
+        chunk_id_to_doc = _get_chunk_id_to_doc_id(working_dir)
+        results = []
+        for i, c in enumerate(chunks):
+            chunk_id = c.get("chunk_id", "")
+            dia_id = chunk_id_to_doc.get(chunk_id, chunk_id)
+            date_time = c.get("file_path", "")
+            context = c.get("content", "")
+            score = 1.0 - (i * 0.01)
+            results.append(
+                {
+                    "dia_id": dia_id,
+                    "date_time": date_time,
+                    "context": context,
+                    "score": float(score),
+                    "from_query": query,
+                }
+            )
+        return results
+    
+    def retrieve_multi(self, queries: list[str]) -> tuple[list[dict], list[dict]]:
+        """对多个 query 执行 LightRAG 检索，合并去重（按 dia_id）。"""
 
+        loop = get_rag_event_loop()
+
+        async def _run_all():
+            all_results = []
+            result_list = []
+            for q in queries:
+                res = await self._lightrag_retrieve_async(q)
+                one_result = {"query": q, "res": res}
+                all_results.extend(res)
+                result_list.append(one_result)
+            return all_results, result_list
+
+        results, result_list = loop.run_until_complete(_run_all())
+        seen = set()
+        deduped = []
+        for r in results:
+            did = r.get("dia_id", "")
+            if did and did not in seen:
+                seen.add(did)
+                deduped.append(r)
+        return deduped, result_list
 
 def get_rag_event_loop():
     """供检索与 LightRAG 初始化使用的 event loop（与历史 _get_rag_event_loop 行为一致）。"""
@@ -192,113 +224,113 @@ def create_img_retriever(
     print(f"[create_img_retriever] Loaded from {index_dir}, top_k={top_k}")
     return retriever
 
+class NaiveRagRetriever:
+    def __init__(self, working_dir: str, conv_id: str, top_k: int):
+        self.working_dir = working_dir
+        self.rag_type = "naive"
+        self.conv_id = conv_id
+        self.top_k = top_k
+        pkl_path = os.path.join(os.path.dirname(working_dir), f"locomo10_dialog_{conv_id}.pkl")
+        print(f"[rag workdir] {pkl_path}")
+        with open(pkl_path, "rb") as f:
+            self.db = pickle.load(f)
 
-def lightrag_retrieve_multi(
-    queries: list[str],
-    conv_id: str,
-    top_k: int = RAG_TOP_K,
-    working_dir: str = None,
-    rag=None,
-) -> tuple[list[dict], list[dict]]:
-    """对多个 query 执行 LightRAG 检索，合并去重（按 dia_id）。"""
+    def get_dp(self):
+        return self.db
 
-    loop = get_rag_event_loop()
+    def retrieve_multi(
+        self,
+        queries: list[str],
+        # conv_id: str,
+        # top_k: int = RAG_TOP_K,
+        # working_dir: str = None,
+    ) -> tuple[list[dict], list[dict]]:
+        """
+        Naive RAG: 从 naiverag 目录加载 pkl，向量检索。返回 (deduped, result_list)。
+        """
+        import pickle
 
-    async def _run_all():
+        import numpy as np
+        from global_methods import get_openai_embedding
+
+        embeddings = self.db.get("embeddings")
+        dia_ids = self.db.get("dia_id", [])
+        date_times = self.db.get("date_time", [])
+        contexts = self.db.get("context", [])
+
+        if embeddings is None or len(dia_ids) == 0:
+            return [], [{"query": q, "res": []} for q in queries]
+
         all_results = []
         result_list = []
+        if isinstance(queries, str):
+            queries = [queries]
         for q in queries:
-            res = await _lightrag_retrieve_async(q, conv_id, top_k, working_dir, rag=rag)
-            one_result = {"query": q, "res": res}
+            query_emb = get_openai_embedding([q])
+            scores = np.dot(query_emb, np.array(embeddings).T).flatten()
+            top_indices = np.argsort(scores)[::-1][:self.top_k]
+            res = [
+                {
+                    "dia_id": dia_ids[idx],
+                    "date_time": date_times[idx],
+                    "context": contexts[idx],
+                    "score": float(scores[idx]),
+                    "from_query": q,
+                }
+                for idx in top_indices
+            ]
             all_results.extend(res)
-            result_list.append(one_result)
-        return all_results, result_list
+            result_list.append({"query": q, "res": res})
 
-    results, result_list = loop.run_until_complete(_run_all())
-    seen = set()
-    deduped = []
-    for r in results:
-        did = r.get("dia_id", "")
-        if did and did not in seen:
-            seen.add(did)
-            deduped.append(r)
-    return deduped, result_list
+        seen = set()
+        deduped = []
+        for r in all_results:
+            did = r.get("dia_id", "")
+            if did and did not in seen:
+                seen.add(did)
+                deduped.append(r)
+        return deduped, result_list
 
+def _load_rag_config(path: str | Path) -> dict:
+    defaults = {
+        "rag_topk": 10,
+        "rag_type": RAG_TYPE_LIGHTRAG,
+        "rag_base": '../memory/rag_storage',
+    }
+    path = Path(path)
+    if not path.exists():
+        raise FileNotFoundError(f"Rag config not found: {path}")
+    with open(path, "r", encoding="utf-8") as f:
+        raw = json.load(f)
+    cfg = defaults.copy()
+    cfg.update(raw)
+    return cfg
 
-def naiverag_retrieve_multi(
-    queries: list[str],
+def build_rag_retrieve(
+    rag_file_path: str,
     conv_id: str,
-    top_k: int = RAG_TOP_K,
-    working_dir: str = None,
-) -> tuple[list[dict], list[dict]]:
-    """
-    Naive RAG: 从 naiverag 目录加载 pkl，向量检索。返回 (deduped, result_list)。
-    """
-    import pickle
+    top_k: int | None = None,
+):
+    """根据 rag.json + conv_id 创建检索器实例。"""
+    rag_cfg = _load_rag_config(rag_file_path)
 
-    import numpy as np
-    from global_methods import get_openai_embedding
+    rag_type = str(rag_cfg["rag_type"])
+    rag_base = str(rag_cfg["rag_base"])
+    if top_k is None:
+        top_k = rag_cfg["rag_topk"]
 
-    NAIVERAG_BASE = os.path.dirname(working_dir)
-    pkl_path = os.path.join(NAIVERAG_BASE, f"locomo10_dialog_{conv_id}.pkl")
-    print(f"[rag workdir] {pkl_path}")
+    workspace = conv_id.replace("-", "")
+    working_dir = os.path.join(rag_base, workspace)
+    print(f"working_dir: {working_dir}")
 
-    with open(pkl_path, "rb") as f:
-        db = pickle.load(f)
-
-    embeddings = db.get("embeddings")
-    dia_ids = db.get("dia_id", [])
-    date_times = db.get("date_time", [])
-    contexts = db.get("context", [])
-
-    if embeddings is None or len(dia_ids) == 0:
-        return [], [{"query": q, "res": []} for q in queries]
-
-    all_results = []
-    result_list = []
-    if isinstance(queries, str):
-        queries = [queries]
-    for q in queries:
-        query_emb = get_openai_embedding([q])
-        scores = np.dot(query_emb, np.array(embeddings).T).flatten()
-        top_indices = np.argsort(scores)[::-1][:top_k]
-        res = [
-            {
-                "dia_id": dia_ids[idx],
-                "date_time": date_times[idx],
-                "context": contexts[idx],
-                "score": float(scores[idx]),
-                "from_query": q,
-            }
-            for idx in top_indices
-        ]
-        all_results.extend(res)
-        result_list.append({"query": q, "res": res})
-
-    seen = set()
-    deduped = []
-    for r in all_results:
-        did = r.get("dia_id", "")
-        if did and did not in seen:
-            seen.add(did)
-            deduped.append(r)
-    return deduped, result_list
-
-
-def rag_retrieve_multi(
-    queries: list[str],
-    conv_id: str,
-    top_k: int = RAG_TOP_K,
-    rag_type: str = RAG_TYPE_LIGHTRAG,
-    working_dir: str = None,
-    rag=None,
-) -> tuple[list[dict], list[dict]]:
-    """根据 rag_type 选择 NaiveRAG 或 LightRAG 检索。返回 (deduped, result_list)。"""
     if rag_type == RAG_TYPE_NAIVE:
-        return naiverag_retrieve_multi(queries, conv_id, top_k, working_dir)
-    if rag_type == RAG_TYPE_LIGHTRAG:
-        return lightrag_retrieve_multi(queries, conv_id, top_k, working_dir, rag=rag)
-    raise ValueError(f"rag_type must be one of {RAG_TYPE_CHOICES}, got {rag_type!r}")
+        ragretriever = NaiveRagRetriever(working_dir, conv_id, top_k)
+    elif rag_type == RAG_TYPE_LIGHTRAG:
+        rag = create_lightrag(working_dir)
+        ragretriever = LightRagRetriever(top_k, working_dir, rag)
+    else:
+        raise ValueError(f"rag_type must be one of {RAG_TYPE_CHOICES}, got {rag_type!r}")
+    return ragretriever
 
 
 def finalize_lightrag(rag):
