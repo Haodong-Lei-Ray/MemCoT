@@ -13,3 +13,9 @@ nltk==3.9.2
 torch==2.6.0
 backoff
 transformers
+
+# CLI Daemon dependencies
+fastapi
+uvicorn
+requests
+pydantic

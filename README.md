@@ -1,192 +1,73 @@
-# MemCoT
+# MemCoT: Test-Time Scaling through Memory-Driven Chain-of-Thought
 
-MemCoT combines **ReAct-style reasoning** with **retrieval over long-term memory** (LightRAG graph + vector stores, optional NaiveRAG). The codebase supports **LoCoMo** (per-conversation samples such as `conv-26`) and **LongMemEval** (per-question haystacks under `benchmark/longmemeval/data/`).
+## 1. 环境安装
 
----
-
-## 1. Setup
-
-### 1.1 Environment
-
-- **Python**: use a recent 3.10+ environment.
-- **Dependencies**: install packages required by the bundled LightRAG tree and the repo (e.g. `openai`, `numpy`, `regex`, `nltk`, `nest_asyncio`, `asyncio` stack). Reference: `mem/LightRAG/requirements-offline.txt` (and related files under `mem/LightRAG/`) as a starting point; extend with whatever `eval_dmsmem.py` / `dmsmem.py` import on your machine.
-- **API keys**: set `OPENAI_API_KEY` and, if you use a proxy or Azure-compatible endpoint, `OPENAI_BASE_URL`. LightRAG also reads `OPENAI_API_BASE`; the code mirrors `OPENAI_BASE_URL` into `OPENAI_API_BASE` when the latter is unset.
-- **Optional**: LoCoMo helper env vars live in `benchmark/locomo/scripts/env.sh` (copy the pattern; do not commit real secrets).
-
-### 1.2 Repository layout (what you must prepare)
-
-| Piece | Role |
-|--------|------|
-| `mem/LightRAG/` | LightRAG implementation used for indexing and query |
-| `benchmark/locomo/data/locomo10.json` | LoCoMo QA and conversations |
-| `benchmark/locomo/data/skip/` | Optional skip lists per `conv-*` (used by evaluation logic for some setups) |
-| `benchmark/longmemeval/data/` | LongMemEval JSON (e.g. `longmemeval_s_cleaned.json`, `s_split/…`) |
-| **Your chosen `--lightrag-base` directory** | Built indices: one subdirectory per workspace (see below) |
-
----
-
-## 2. Long-term memory
-
-### 2.1 How memory is stored and loaded
-
-**Layout**
-
-- **LoCoMo**: sample id `conv-26` → workspace folder name `conv26` (hyphens removed). The LightRAG working directory is:
-
-  e.g. `/data/rag_storage/conv26/` when `--lightrag-base` is `/data/rag_storage`
-
-- **LongMemEval**: each item is keyed by a string like `0000_<question_id>`; the build script writes one LightRAG workspace per JSON stem under your output tree (see §3.2).
-
-**Loading at runtime**
-
-- `dmsmem.create_lightrag(working_dir)` expects that directory to **already exist** and contain a built LightRAG store. It initializes storages and is reused for retrieval during the ReAct loop.
-- You can point evaluation at your index root with `--lightrag-base /path/to/rag_storage` (see `eval_dmsmem.py` / `eval_dmsmem_longmemeval.py`).
-
-**Building LoCoMo indices**
-
-From the **MemCoT repository root**:
-
+首先，克隆本仓库并进入项目目录：
 ```bash
-export OPENAI_API_KEY="your-key"
-# optional: export OPENAI_BASE_URL="https://api.example.com/v1"
-
-python benchmark/locomo/task_eval/build_lightrag_locomo.py \
-  --conv-id conv-26 \
-  -o /path/to/rag_storage/conv26
+git clone https://github.com/your-repo/MemCoT.git
+cd MemCoT
 ```
 
-Repeat for each `conv-*` you need. Default embedding/LightRAG settings follow the script (dialog-level chunks, `text-embedding-3-small`, `gpt-4o-mini` for graph extraction in that builder).
-
-**Building LongMemEval indices**
-
-Use `script/build/build_lightrag_longmemeval.py`. Batch drivers under `script/build/longmemeval_script/` (e.g. `vllm_s/run_build_s_te3s_all_0-49.sh`) show the pattern:
-
-- **`--input`**: a directory of per-question JSON files, e.g. `benchmark/longmemeval/data/s_split/0-49`
-- **`-o` / output**: e.g. `/path/to/longmemeval/lightrag/te3s`
-- **`--embedding-model`**, **`--llm-mode`**, **`--vllm-config`**: set according to your stack (OpenAI API vs local vLLM)
-
-Example shape (adapt paths and `cd` to your clone):
-
+推荐使用 Conda 创建虚拟环境：
 ```bash
-cd /path/to/MemCoT
-python script/build/build_lightrag_longmemeval.py \
-  --input benchmark/longmemeval/data/s_split/0-49 \
-  -o /path/to/longmemeval/lightrag/te3s \
-  --batch-size 50 \
-  --embedding-model text-embedding-3-small \
-  --llm-mode openai
+conda create -n memcot python=3.10
+conda activate memcot
 ```
 
-Other shards (`50-99`, `100-149`, …) are covered by sibling `run_build_s_te3s_all_*.sh` scripts in the same folder.
-
-### 2.2 How to run the agent
-
-**Single query (interactive / debug)**
-
-From repo root:
-
+安装所需依赖（已包含 `fastapi` 等后台守护进程所需库）：
 ```bash
-python dmsmem.py \
-  -c conv-26 \
-  -m gpt-4o-mini \
-  --lightrag-base /path/to/rag_storage \
-  --rag-type lightrag \
-  --agent-flag 11000 \
-  --middle-scale 4 \
-  "When did Caroline go to the LGBTQ support group?"
+pip install -r re.txt
 ```
 
-Notable flags (see `dmsmem.py`):
+## 2. 命令行工具 (CLI)
 
-- **`--rag-type`**: `lightrag` (default) or `naive`
-- **`--lightrag-base`**: root containing per-conversation workspaces
-- **`--agent-flag`**: five digits `rag_view / middle_view / full_view / agentic_graph / visual_search` (e.g. `11000` enables RAG + middle view, disables full view and visual search)
-- **`--benchmark`**: `locomo` (default) or `longmemeval` for prompt/context layout
+MemCoT 提供了一个基于 C/S 架构的命令行工具 `memcot_cil.py`，支持在后台常驻运行 MemCoT 实例，并提供快速的检索问答服务。
 
-**LoCoMo batch evaluation**
+支持的命令如下：
+- `start`：在后台启动 MemCoT 守护进程 (Daemon)。支持 `--log-file` 参数将日志输出到文件。
+- `stop`：停止后台运行的守护进程。
+- `status`：查看当前守护进程的运行状态。
+- `session`：列出当前所有可用的会话 (Session) 及其 RAG 状态。
+- `add --idx <N>`：为指定索引 `N` 的会话构建 RAG 索引 (Embedding) 并保存。
+- `search -q "<query>" -o "<dir>"`：在已加载的会话中搜索指定问题，并生成回答，结果保存在指定目录。
 
-`eval_dmsmem.py` runs ReAct+LightRAG over QA in `benchmark/locomo/data/locomo10.json`, computes F1 (including category-5 abstention handling), and can resume from partial JSON.
+## 3. 快速开始示例
 
-```bash
-python eval_dmsmem.py \
-  --sample-id conv-26 \
-  --lightrag-base /path/to/rag_storage \
-  -m gpt-4o-mini \
-  -k 10 \
-  --max-step 8 \
-  --agent-flag 11000 \
-  --middle-scale 4 \
-  -o /path/to/eval_output \
-  --resume \
-  -n -1
-```
-
-Use `--skip-category 5` to drop category 5 items. Use `--concurrency N` for parallel QA (async).
-
-**LongMemEval batch evaluation**
+以下是一个完整的运行示例，展示了如何启动服务、构建索引、进行搜索并停止服务：
 
 ```bash
-python eval_dmsmem_longmemeval.py \
-  --data-file benchmark/longmemeval/data/longmemeval_s_cleaned.json \
-  --lightrag-base /path/to/longmemeval/lightrag/te3s \
-  -m gpt-4o-mini \
-  --start-idx 0 \
-  -n 500 \
-  -k 10 \
-  --max-step 8 \
-  --middle-scale 10 \
-  --benchmark longmemeval \
-  -o /path/to/longmemeval_eval \
-  --resume \
-  --run-llm-judge
+# 1. 启动后台守护进程
+python memcot_cil.py start
+
+# 2. 查看所有可用的会话列表
+python memcot_cil.py session
+
+# 3. 选择一个会话（例如 idx=0）构建 RAG 索引
+python memcot_cil.py add --idx 0
+
+# 4. 执行搜索查询
+python memcot_cil.py search -q "hi" -o "./output"
+
+# 5. 任务完成后，停止守护进程
+python memcot_cil.py stop
 ```
 
-Agent LLM routing can use `config/configqwen1.json` via `with_agent_llm_config` in `dmsmem.py`; align that file with your endpoint for the **agent** (separate from LightRAG’s embed/LLM settings if you split providers).
+## 4. 评测 (For Benchmark)
 
----
+TODO
 
-## 3. LoCoMo benchmark workflow
+## 5. 引用
 
-Relevant tree: **`benchmark/locomo/`**
+如果您在研究中使用了本项目，请引用我们的论文：
 
-1. **Data**: `data/locomo10.json` plus optional `data/skip/conv-*.json` and `data/con/` as needed by your pipeline.
-2. **Build memory**: §2.1 — `task_eval/build_lightrag_locomo.py` per `conv-*`.
-3. **Evaluate**:
-   - **Python**: `eval_dmsmem.py` (§2.2).
-   - **Slurm wrappers (example)**: `script/gpt/4o-mini/F2/`
-     - `sbatch_eval_react_lightrag.sh` — sets `EVAL_OUT`, `CONV`, then submits `eval_react_lightrag_conv.sh`
-     - `eval_react_lightrag_conv.sh` — runs `eval_dmsmem.py` with your `--lightrag-base`, model, `agent-flag`, etc.
-     - `command.sh` — loops over multiple conversations
-   - **Before running**: edit these scripts so `cd` points to **your** MemCoT clone, paths match your `--lightrag-base` and output dirs, and **remove any hard-coded API keys** (use env vars).
-
-Optional: `benchmark/locomo/scripts/env.sh` documents variables used by older LoCoMo tooling (`DATA_FILE_PATH`, `OPENAI_*`, etc.).
-
----
-
-## 4. LongMemEval benchmark workflow
-
-### 4.1 Building indices
-
-- **Builder**: `script/build/build_lightrag_longmemeval.py`
-- **Batch SLURM / shard drivers**: `script/build/longmemeval_script/vllm_s/` (e.g. `run_build_s_te3s_all_0-49.sh`, `…_50-99.sh`, …) and `vllm/` variants for different splits.
-- Each driver sets `DATASET_DIR` to a split under `benchmark/longmemeval/data/s_split/`, `RAG_OUT` to your te3s (or chosen) output root, and invokes the builder with embedding / vLLM options.
-
-Ensure the **`--lightrag-base`** you pass to evaluation matches the **output layout** produced by the builder (per-question workspace names).
-
-### 4.2 Evaluation
-
-- **Main script**: `eval_dmsmem_longmemeval.py` (§2.2).
-- **Example Slurm bundle**: `script/longmemeval/gpt/4o-mini/main/`
-  - `sbatch_eval_react_lightrag_14b.sh` — creates `EVAL_OUT`, submits `eval_lightrag_longmemeval.sh`
-  - `eval_lightrag_longmemeval.sh` — `srun` + `eval_dmsmem_longmemeval.py` with `--data-file`, `--lightrag-base`, `--run-llm-judge`, slice args
-  - `command.sh` — example dependency chain for many small jobs (adjust to your scheduler policy)
-  - `sum.sh` / `sumre.sh` / `sumw.sh` — aggregation helpers for logs or metrics (inspect locally for your workflow)
-
-Again, replace hard-coded `cd`, paths, and secrets in shell scripts with your environment.
-
----
-
-## 5. Notes
-
-- **Vision / OCR**: if `agent-flag` enables visual bits, you may need image directories under `data/img_pdf_minor/<conv-id>/…` and, for visual *search*, indices under `--img-index-base` (see `dmsmem.py` / `agent/agent.py`).
-- **Naming**: LoCoMo `conv-26` → directory `conv26` under `--lightrag-base` (`_conv_id_to_workspace` in `dmsmem.py`).
+```bibtex
+@misc{lei2026memcottesttimescalingmemorydriven,
+      title={MemCoT: Test-Time Scaling through Memory-Driven Chain-of-Thought}, 
+      author={Haodong Lei and Junming Liu and Yirong Chen and Ding Wang and Hongsong Wang},
+      year={2026},
+      eprint={2604.08216},
+      archivePrefix={arXiv},
+      primaryClass={cs.MA},
+      url={https://arxiv.org/abs/2604.08216}, 
+}
+```
