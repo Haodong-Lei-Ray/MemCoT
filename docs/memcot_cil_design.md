@@ -16,6 +16,7 @@
 | `memcot status` | 查看后台服务运行状态。 | `GET /status` |
 | `memcot session` | 获取完整的 session 列表。 | `GET /session` -> `memcot_instance.ragretriever.get_session_list()` |
 | `memcot add --idx <N>` | 为指定的 session 执行数据清洗和 embedding。 | `POST /add` -> `memcot_instance.ragretriever.build_rag(idx)` |
+| `memcot switch --idx <N>` | 根据 session 列表中的索引切换当前对话。 | `POST /switch` -> `memcot_instance.switch_session(idx)` |
 | `memcot search -q "<Q>" -o "<dir>"` | 在当前加载的 session 中检索相关记忆并回答。 | `POST /search` -> `memcot_instance.run(query, output_dir)` -> `finalize_memcot_exit` |
 
 ## 3. 详细设计 (Detailed Design)

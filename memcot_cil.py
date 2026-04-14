@@ -92,6 +92,16 @@ try:
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
+    @app.post("/switch")
+    def switch_session_endpoint(req: AddRequest):
+        if not memcot_instance:
+            raise HTTPException(status_code=500, detail="MemCoT not initialized")
+        try:
+            memcot_instance.switch_session(idx=req.idx)
+            return {"status": "success", "message": f"Switched to session index {req.idx} successfully."}
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
     @app.post("/search")
     def search_session(req: SearchRequest):
         if not memcot_instance:
@@ -256,6 +266,19 @@ def cmd_search(args):
         if 'res' in locals() and res.status_code != 200:
             print(res.text)
 
+def cmd_switch(args):
+    if not is_running():
+        print("Daemon is not running. Please run 'memcot start' first.")
+        return
+    try:
+        res = requests.post(f"{BASE_URL}/switch", json={"idx": args.idx})
+        res.raise_for_status()
+        print(res.json().get("message", "Switched successfully."))
+    except Exception as e:
+        print(f"Error switching session: {e}")
+        if 'res' in locals() and res.status_code != 200:
+            print(res.text)
+
 def cmd_logshow(args):
     if not os.path.exists(LOG_FILE):
         print(f"Log file {LOG_FILE} does not exist yet.")
@@ -304,6 +327,11 @@ def main():
     parser_add = subparsers.add_parser("add", help="Build RAG for a specific session index")
     parser_add.add_argument("--idx", type=int, required=True, help="Session index to add")
     parser_add.set_defaults(func=cmd_add)
+    
+    # switch
+    parser_switch = subparsers.add_parser("switch", help="Switch to a different session by index")
+    parser_switch.add_argument("--idx", type=int, required=True, help="Session index to switch to")
+    parser_switch.set_defaults(func=cmd_switch)
     
     # search
     parser_search = subparsers.add_parser("search", help="Search in the loaded session")

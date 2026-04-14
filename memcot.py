@@ -220,7 +220,7 @@ class MemCoT:
         self.judge_agent = JudgeAgent(self.model, temperature=0.0)
 
         if conv_id:
-            self.switch_session(conv_id)
+            self.switch_session(conv_id=conv_id)
 
 
     def try_responder_answer_from_evidence(
@@ -255,7 +255,21 @@ class MemCoT:
             return 'If the answer is not mentioned in the conversation, answer "Not mentioned in the conversation".'
         return ""
     
-    def switch_session(self, conv_id: str):
+    def switch_session(self, idx: int = None, conv_id: str = None):
+        if idx is not None:
+            if hasattr(self.ragretriever, "get_session_list"):
+                data = self.ragretriever.get_session_list()
+                sessions = data.get("sessions", [])
+                target = next((s for s in sessions if s.get("index") == idx), None)
+                if not target:
+                    raise ValueError(f"Session with index {idx} not found.")
+                conv_id = target.get("sessionId")
+            else:
+                raise ValueError("Current retriever does not support switching by index.")
+                
+        if not conv_id:
+            raise ValueError("Must provide either idx or conv_id to switch_session.")
+            
         self.conv_id = conv_id
         from agent.conversation import Conversation
         self.conversation = Conversation(conv_id, self.benchmark, self.conversation_base, self.rag_base)

@@ -1,7 +1,7 @@
 {
   "rag_type": "naive",
   "rag_topk": 10,
-  "rag_base": "",
+  "rag_base": "Please let user set",
   "benchmark": "openclaw",
-  "conversation_base": ""
+  "conversation_base": "Please let user set"
 }
