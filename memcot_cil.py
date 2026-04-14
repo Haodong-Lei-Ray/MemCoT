@@ -11,7 +11,7 @@ from pathlib import Path
 # 确保能正确导入项目内的模块
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, PROJECT_ROOT)
-from tool.show.cil import slight_green_print
+from tool.show.cil import slight_green_print, grey_print, red_print
 
 # --- Configuration ---
 PORT = 8088
@@ -45,27 +45,27 @@ try:
         
         rag_cfg = os.path.join(PROJECT_ROOT, "config", "rag", "openclawnaiverag.json")
         memcot_cfg = os.path.join(PROJECT_ROOT, "config", "memcot.json")
-        print(f"Loading RAG config from {rag_cfg}")
+        grey_print(f"Loading RAG config from {rag_cfg}")
         
         # 临时获取 session 列表以确定 conv_id
         temp_retriever, _ = build_rag_retrieve(rag_file_path=rag_cfg)
         data = temp_retriever.get_session_list()
         sessions = data.get("sessions", [])
         if not sessions:
-            print("Warning: No sessions found. MemCoT initialized without a valid conv_id.")
+            red_print("Warning: No sessions found. MemCoT initialized without a valid conv_id.")
             conv_id = "default"
         else:
             conv_id = sessions[0].get("sessionId")
             
-        print(f"Initializing MemCoT with conv_id: {conv_id}")
+        grey_print(f"Initializing MemCoT with conv_id: {conv_id}")
         memcot_instance = MemCoT(
             memcot_file_path=memcot_cfg,
             rag_file_path=rag_cfg,
             conv_id=conv_id,
         )
-        print("MemCoT Daemon initialized successfully.")
+        slight_green_print("MemCoT Daemon initialized successfully.")
         yield
-        print("MemCoT Daemon shutting down.")
+        slight_green_print("MemCoT Daemon shutting down.")
 
     app = FastAPI(lifespan=lifespan)
 
@@ -146,20 +146,28 @@ def cmd_start(args):
     print("Starting MemCoT daemon...")
     cmd = [sys.executable, os.path.abspath(__file__), "serve"]
     
+    env = os.environ.copy()
+    env["FORCE_COLOR"] = "1"
+    env["PYTHONUNBUFFERED"] = "1"
+    
+    # 每次启动时清空日志文件
+    with open(LOG_FILE, "w") as f:
+        pass
+    
     process = subprocess.Popen(
         cmd,
-        stdout=open(LOG_FILE, "a") if getattr(args, "log_file", False) else sys.stdout,
+        stdout=open(LOG_FILE, "a"),
         stderr=subprocess.STDOUT,
+        env=env,
         preexec_fn=os.setsid if os.name == 'posix' else None
     )
     
     with open(PID_FILE, "w") as f:
         f.write(str(process.pid))
         
-    if getattr(args, "log_file", False):
-        print(f"Daemon started with PID {process.pid}. Check {LOG_FILE} for logs.")
-    else:
-        print(f"Daemon started with PID {process.pid}. Logging to terminal stdout.")
+    print(f"Daemon started with PID {process.pid} in the background.")
+    print(f"Logs are automatically written to {LOG_FILE}")
+    print("Use 'python memcot_cil.py logshow' to monitor the logs in real-time.")
 
 def cmd_stop(args):
     if not os.path.exists(PID_FILE):
@@ -176,7 +184,10 @@ def cmd_stop(args):
     pid = int(pid_str)
     print(f"Stopping daemon (PID {pid})...")
     try:
-        os.killpg(os.getpgid(pid), signal.SIGTERM)
+        if os.name == 'posix':
+            os.killpg(os.getpgid(pid), signal.SIGTERM)
+        else:
+            os.kill(pid, signal.SIGTERM)
         print("Daemon stopped.")
     except ProcessLookupError:
         print("Process not found. It may have already crashed.")
@@ -245,6 +256,23 @@ def cmd_search(args):
         if 'res' in locals() and res.status_code != 200:
             print(res.text)
 
+def cmd_logshow(args):
+    if not os.path.exists(LOG_FILE):
+        print(f"Log file {LOG_FILE} does not exist yet.")
+        return
+    try:
+        # 进入备用屏幕（Alternate Screen）
+        sys.stdout.write("\033[?1049h")
+        sys.stdout.flush()
+        # 从第一行开始输出，并持续追踪
+        subprocess.run(["tail", "-n", "+1", "-f", LOG_FILE])
+    except KeyboardInterrupt:
+        pass
+    finally:
+        # 退出备用屏幕，恢复终端原状
+        sys.stdout.write("\033[?1049l")
+        sys.stdout.flush()
+
 def cmd_serve(args):
     """Internal command to run the uvicorn server."""
     if app is None:
@@ -258,7 +286,6 @@ def main():
     
     # start
     parser_start = subparsers.add_parser("start", help="Start the MemCoT daemon in the background")
-    parser_start.add_argument("--log-file", action="store_true", help="Write daemon logs to memcot_daemon.log")
     parser_start.set_defaults(func=cmd_start)
     
     # stop
@@ -283,6 +310,10 @@ def main():
     parser_search.add_argument("-q", "--query", type=str, required=True, help="Query string")
     parser_search.add_argument("-o", "--output-dir", type=str, default="./output", help="Output directory for results")
     parser_search.set_defaults(func=cmd_search)
+    
+    # logshow
+    parser_logshow = subparsers.add_parser("logshow", help="Monitor the daemon logs in real-time")
+    parser_logshow.set_defaults(func=cmd_logshow)
     
     # help
     parser_help = subparsers.add_parser("help", help="Show this help message")

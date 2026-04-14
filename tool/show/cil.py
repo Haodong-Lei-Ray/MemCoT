@@ -9,10 +9,14 @@ ANSI_DIM = "\033[2m"
 ANSI_GRAY = "\033[38;5;245m"
 ANSI_LIGHT_GREEN = "\033[38;5;120m"
 ANSI_RED = "\033[31m"
+ANSI_MORANDI_BEIGE = "\033[38;5;223m"
+ANSI_MORANDI_BLUE = "\033[38;5;110m"
 
 
 def _use_color() -> bool:
     # Respect NO_COLOR and avoid escape sequences in non-tty logs.
+    if os.getenv("FORCE_COLOR"):
+        return True
     return sys.stdout.isatty() and not os.getenv("NO_COLOR")
 
 
@@ -26,6 +30,15 @@ def grey_print(text: str):
 
 def slight_green_print(text: str):
     print(_c(text, ANSI_LIGHT_GREEN))
+
+def red_print(text: str):
+    print(_c(text, ANSI_RED))
+
+def morandi_print(text: str):
+    print(_c(text, ANSI_MORANDI_BEIGE))
+
+def morandi_blue_print(text: str):
+    print(_c(text, ANSI_MORANDI_BLUE))
 
 def format_age(age_ms):
     if age_ms is None:

@@ -66,7 +66,7 @@ from agent.agent import (
     WRONG_LIST,
 )
 from global_methods import run_chatgpt
-from tool.show.cil import grey_print
+from tool.show.cil import grey_print, morandi_print, morandi_blue_print
 
 DEFAULT_MODEL = "gpt-4o-mini"
 RAG_CONFIG_PATH = str(PROJECT_ROOT / "config" / "rag.json")
@@ -299,6 +299,7 @@ class MemCoT:
             zoomin_record = []
             # ─── zoom_in_focal_retrieve2 ───
             if agent_flag[0]:
+                morandi_blue_print(f"[🦉 MemCoT Zoom_in_focal_retrieve]")
                 rag_view_result = self.zoom_in_focal_retrieve.run(
                     root_query=root_query,
                     query_queue=query_queue,
@@ -312,6 +313,7 @@ class MemCoT:
                 rag_view_missing_information = rag_view_result.get("missing_information", [])
                 rag_dia_ids = [r.get("dia_id", "") for r in rag_dia]
                 temp_short_memory.extend(rag_dia)
+                morandi_blue_print(f"[🦉 MemCoT] thinking: {rag_view_thinking}")
                 rag_view_record = {
                     "rag_view_useful_dia_ids": rag_dia_ids,
                     "rag_view_thinking": rag_view_thinking,
@@ -321,6 +323,7 @@ class MemCoT:
 
             # ─── zoom_out_context_expansion ───
             if agent_flag[1] and len(temp_short_memory) > 0:
+                morandi_print(f"[🦉 MemCoT Zoom_out_context_expansion]")
                 middle_view_result = self.zoom_out_context_expansion.run(
                     root_query=root_query,
                     query_queue=query_queue,
@@ -336,6 +339,7 @@ class MemCoT:
                     if r.get("dia_id", "") not in existing_ids:
                         temp_short_memory.append(r)
                         existing_ids.add(r.get("dia_id", ""))
+                morandi_print(f"[🦉 MemCoT] thinking: {middle_view_thinking}")
                 middle_view_record = {
                     "middle_view_useful_dia_ids": [r.get("dia_id", "") for r in middle_dia],
                     "middle_view_thinking": middle_view_thinking,
@@ -419,6 +423,7 @@ class MemCoT:
 
             obs_thinking = obs["thinking"]
             grey_print(f"[🦉 MemCoT] Observation: {obs_thinking}")
+            grey_print(f"[🦉 MemCoT] can_answer: {obs['can_answer']}")
             trajectory.append({
                 "Act": act_record,
                 "Observation": obs_record,
