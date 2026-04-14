@@ -3,5 +3,5 @@
   "rag_topk": 10,
   "rag_base": "",
   "benchmark": "openclaw",
-  "conversation_base": "/home/lei/.openclaw/agents/main/sessions"
+  "conversation_base": ""
 }
