@@ -104,6 +104,8 @@ def show_session_list(data):
         mid_cols = f"{kind:<6} {key:<26} {age:<9} {model:<14} {tokens:<20} {flags_str:<46}"
         if rag_status == "Success":
             rag_col = _c(f"{rag_status}", ANSI_RED)
-        else:
+        elif rag_status == "wait":
             rag_col = _c(f"{rag_status}", ANSI_ORANGE)
+        else:
+            rag_col = _c(f"{rag_status}", ANSI_GRAY)
         print(f"{_c(idx_col, ANSI_ORANGE)} {_c(mid_cols, ANSI_GRAY)} {rag_col}")

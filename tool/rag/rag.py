@@ -263,22 +263,38 @@ class NaiveRagRetriever:
         # 动态检测每个 session 的 rag_status
         for item in data.get("sessions", []):
             session_id = item.get("sessionId")
-            if session_id:
-                washed_file = os.path.join(self.working_dir, "session", f"{session_id}.json")
-                if os.path.exists(washed_file):
-                    try:
-                        with open(washed_file, "r", encoding="utf-8") as f:
-                            washed_data = json.load(f)
-                        washed_session = washed_data.get("session", [])
-                        if washed_session and all(msg.get("rag_status") == "success" for msg in washed_session):
-                            item["rag_status"] = "Success"
-                        else:
-                            item["rag_status"] = "fail"
-                    except Exception:
-                        item["rag_status"] = "fail"
-                else:
+            if not session_id:
+                item["rag_status"] = "fail"
+                continue
+
+            raw_file = os.path.join(self.conversation_base, f"{session_id}.jsonl")
+            if not os.path.exists(raw_file):
+                item["rag_status"] = "fail"
+                continue
+                
+            try:
+                total_num = self.get_washable_count(raw_file)
+            except Exception:
+                total_num = -1
+
+            washed_file = os.path.join(self.working_dir, "session", f"{session_id}.json")
+            if not os.path.exists(washed_file):
+                item["rag_status"] = "fail"
+                continue
+
+            try:
+                with open(washed_file, "r", encoding="utf-8") as f:
+                    washed_data = json.load(f)
+                washed_session = washed_data.get("session", [])
+                
+                if len(washed_session) < total_num or total_num == -1:
                     item["rag_status"] = "fail"
-            else:
+                else:
+                    if washed_session and all(msg.get("rag_status") == "success" for msg in washed_session):
+                        item["rag_status"] = "Success"
+                    else:
+                        item["rag_status"] = "wait"
+            except Exception:
                 item["rag_status"] = "fail"
                 
         # 保存更新后的状态
