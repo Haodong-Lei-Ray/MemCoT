@@ -495,9 +495,7 @@ class NaiveRagRetriever:
         # ==========================================
         # 4. 加载已存在的 embedding 数据库 (.pkl)
         # ==========================================
-        emb_dir = os.path.join(self.working_dir, "emb")
-        os.makedirs(emb_dir, exist_ok=True)
-        pkl_path = os.path.join(emb_dir, f"{session_id}.pkl")
+        pkl_path = os.path.join(self.working_dir, f"{session_id}.pkl")
         
         database = {'embeddings': [], 'date_time': [], 'dia_id': [], 'context': []}
         if os.path.exists(pkl_path):
@@ -569,6 +567,8 @@ class NaiveRagRetriever:
         self.top_k = top_k
         self.conv_id = conv_id
         pkl_path = os.path.join(self.working_dir, f"{self.conv_id}.pkl")
+        if not os.path.exists(pkl_path):
+            raise FileNotFoundError(f"NaiveRAG pkl not found: {pkl_path}")
         with open(pkl_path, "rb") as f:
             self.db = pickle.load(f)
         print(f"[🦉 MemCoT] rag workdir: {pkl_path}")
@@ -647,8 +647,6 @@ def load_rag_retrieve(
 ):
     """根据 rag.json + conv_id 创建检索器实例。"""
     rag_cfg = _load_rag_config(rag_file_path)
-    if not conv_id:
-        raise ValueError("conv_id is required (pass it or set 'conv-id' in rag config)")
 
     conversation_base = rag_cfg["conversation_base"]
     benchmark = str(rag_cfg['benchmark'])
@@ -662,7 +660,15 @@ def load_rag_retrieve(
     if rag_type == RAG_TYPE_NAIVE:
         working_dir = rag_base
         ragretriever = NaiveRagRetriever(working_dir, conversation_base)
-        ragretriever.load_rag(conv_id)
+        if benchmark == "openclaw":
+            if not conv_id:
+                # 获取session_list
+                session_list = ragretriever.get_session_list()
+                conv_id = session_list[0].get("sessionId")
+        else:
+            if not conv_id:
+                raise ValueError("conv_id is required (pass it or set 'conv-id' in rag config)")
+        ragretriever.load_rag(conv_id, top_k)
     elif rag_type == RAG_TYPE_LIGHTRAG:
         workspace = conv_id.replace("-", "")
         working_dir = os.path.join(rag_base, workspace)
