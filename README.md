@@ -4,7 +4,7 @@
 
 首先，克隆本仓库并进入项目目录：
 ```bash
-git clone https://github.com/your-repo/MemCoT.git
+git https://github.com/Haodong-Lei-Ray/MemCoT.git
 cd MemCoT
 ```
 
