@@ -56,7 +56,12 @@ python memcot_cil.py search -q "hi" -o "./output"
 python memcot_cil.py stop
 ```
 
-## 4. 评测 (For Benchmark)
+## Openclaw等Agent请读这个
+
+如果你是 OpenClaw 或其他 AI Agent，请务必阅读并遵循 `skills/openclaw-memcot-cli/SKILL.md` 中的指令。
+它详细规定了你如何通过自然语言与用户交互，并在后台调用 `memcot_cil.py` 进行长文本记忆检索。
+
+##  评测 (For Benchmark)
 
 TODO
 

@@ -68,7 +68,6 @@ from agent.agent import (
 from global_methods import run_chatgpt
 from tool.show.cil import grey_print, morandi_print, morandi_blue_print
 
-DEFAULT_MODEL = "gpt-4o-mini"
 RAG_CONFIG_PATH = str(PROJECT_ROOT / "config" / "rag.json")
 MEMCOT_CONFIG_PATH = str(PROJECT_ROOT / "config" / "memcot.json")
 
@@ -177,7 +176,7 @@ class MemCoT:
 
     def __init__(
         self,
-        model: str = DEFAULT_MODEL,
+        model: str = None,
         memcot_file_path: str = MEMCOT_CONFIG_PATH,
         rag_file_path: str = RAG_CONFIG_PATH,
         conv_id: str | None = None,
@@ -200,13 +199,21 @@ class MemCoT:
         #通用设置
         self.agent_flag = agent_flag
         self.max_step = max_step
+        if model is None:
+            # 读取memcot_cfg里agent_config的model_name
+            agent_config = memcot_cfg.get("agent_config", {})
+            model = agent_config.get("model_name", None)
+            #警告一下，如果modelw为None的话
+            if model is None:
+                raise ValueError(f"model_name 为空，请检查 {memcot_file_path}文件")
         self.model = model
+
         # zoom_in_focal_retrieve
-        self.zoom_in_focal_retrieve = ZoomInFocalRetrieve(model, temperature=1.0)
+        self.zoom_in_focal_retrieve = ZoomInFocalRetrieve(self.model, temperature=1.0)
         # zoom_out_context_expansion
         if agent_flag[1] == "1":
             self.zoom_out_context_expansion = ZoomOutContextExpansion(
-                model, temperature=0.0, middle_scale=middle_scale
+                self.model, temperature=0.0, middle_scale=middle_scale
             )
         # panoramic_visual_grounding
         self.img_retriever = None
@@ -214,7 +221,7 @@ class MemCoT:
             print("初始化视觉搜索...")
             self.img_retriever = create_img_retriever(self.conv_id, img_index_base=img_index_base)
         # judge_agent
-        self.judge_agent = JudgeAgent(model, temperature=0.0)
+        self.judge_agent = JudgeAgent(self.model, temperature=0.0)
 
 
     def try_responder_answer_from_evidence(
@@ -490,7 +497,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="ReAct + RAG (naive/lightrag) on LoCoMo")
     parser.add_argument("query", nargs="*", help="Query")
-    parser.add_argument("-m", "--model", default=DEFAULT_MODEL)
+    parser.add_argument("-m", "--model", default="gpt-4o-mini")
     parser.add_argument("-o", "--output-dir", default=None)
     parser.add_argument(
         "--rag-config",
