@@ -16,7 +16,7 @@
 
 | 类别 | 说明 |
 |------|------|
-| **检索** | `build_rag_retrieve(rag_file_path)` 创建 retriever，循环内统一调用 `retriever.retrieve_multi(query_queue)` |
+| **检索** | `load_rag_retrieve(rag_file_path)` 创建 retriever，循环内统一调用 `retriever.retrieve_multi(query_queue)` |
 | **Agent** | 封装为类：`ZoomInFocalRetrieve`、`ZoomOutContextExpansion`、`JudgeAgent`、`ResponderAgent`、`FallbackResponderAgent` |
 | **Conversation** | `Conversation` 类封装当前对话的 `conv_id`、`benchmark`、`full_conv`、`haystack_session_ids` 等 |
 | **全量对话** | `full_conv` 仅在循环耗尽后由 `FallbackResponderAgent` 使用 |

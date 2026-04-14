@@ -685,10 +685,9 @@ def _load_rag_config(path: str | Path) -> dict:
 
 def load_rag_retrieve(
     rag_file_path: str,
-    conv_id: str | None = None,
     top_k: int | None = None,
 ):
-    """根据 rag.json + conv_id 创建检索器实例。"""
+    """根据 rag.json 创建检索器实例。"""
     rag_cfg = _load_rag_config(rag_file_path)
 
     conversation_base = rag_cfg["conversation_base"]
@@ -699,55 +698,20 @@ def load_rag_retrieve(
         top_k = rag_cfg["rag_topk"]
 
     print(f"[🦉 MemCoT] Rag Base: {rag_base}")
+    working_dir = rag_base
 
     if rag_type == RAG_TYPE_NAIVE:
-        working_dir = rag_base
         ragretriever = NaiveRagRetriever(working_dir, conversation_base)
-        if benchmark == "openclaw":
-            if not conv_id:
-                # 获取session_list
-                session_list = ragretriever.get_session_list()
-                conv_id = session_list[0].get("sessionId")
-        else:
-            if not conv_id:
-                raise ValueError("conv_id is required (pass it or set 'conv-id' in rag config)")
-        ragretriever.load_rag(conv_id, top_k)
     elif rag_type == RAG_TYPE_LIGHTRAG:
-        workspace = conv_id.replace("-", "")
-        working_dir = os.path.join(rag_base, workspace)
+        # workspace = conv_id.replace("-", "")
+        # Note: LightRAG currently needs workspace, which usually depends on conv_id.
+        # For now, we just pass rag_base as working_dir if conv_id is not available here.
         rag = create_lightrag(working_dir)
         ragretriever = LightRagRetriever(working_dir, rag, top_k)
     else:
         raise ValueError(f"rag_type must be one of {RAG_TYPE_CHOICES}, got {rag_type!r}")
-    conversation = Conversation(conv_id, benchmark, conversation_base, rag_base)
-    return ragretriever, conversation
-
-def build_rag_retrieve(
-    rag_file_path: str
-):
-    """根据 rag.json + conv_id 创建检索器实例。"""
-    rag_cfg = _load_rag_config(rag_file_path)
-
-    conversation_base = rag_cfg["conversation_base"]
-    benchmark = str(rag_cfg['benchmark'])
-    rag_type = str(rag_cfg["rag_type"])
-    rag_base = str(rag_cfg["rag_base"])
-
-    print(f"[🦉 MemCoT] Rag Base: {rag_base}")
-
-    if rag_type == RAG_TYPE_NAIVE:
-        working_dir = rag_base
-        ragretriever = NaiveRagRetriever(working_dir, conversation_base)
-    elif rag_type == RAG_TYPE_LIGHTRAG:
-        workspace = conv_id.replace("-", "")
-        working_dir = os.path.join(rag_base, workspace)
-        rag = create_lightrag(working_dir)
-        ragretriever = LightRagRetriever(working_dir, rag, top_k)
-    else:
-        raise ValueError(f"rag_type must be one of {RAG_TYPE_CHOICES}, got {rag_type!r}")
-    # conversation = Conversation(conv_id, benchmark, conversation_base)
-    conversation = None
-    return ragretriever, conversation
+        
+    return ragretriever, benchmark, conversation_base, rag_base, top_k
 
 def finalize_lightrag(rag):
     """关闭 LightRAG 实例的存储。"""

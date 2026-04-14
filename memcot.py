@@ -182,19 +182,20 @@ class MemCoT:
         conv_id: str | None = None,
         rag_top_k = None,
     ):
-        # 初始化RAG基础设施, 初始化Conversation
-        self.ragretriever, self.conversation = load_rag_retrieve(
+        # 初始化RAG基础设施
+        self.ragretriever, self.benchmark, self.conversation_base, self.rag_base, self.rag_top_k = load_rag_retrieve(
             rag_file_path=rag_file_path,
-            conv_id=conv_id,
             top_k=rag_top_k,
         )
-        self.conv_id = conv_id
+        self.conv_id = None
+        self.conversation = None
+        self.img_retriever = None
 
         memcot_cfg = _load_memcot_config(memcot_file_path)
         agent_flag = str(memcot_cfg["agent_flag"])
         max_step = int(memcot_cfg["max_step"])
         middle_scale = int(memcot_cfg["middle_scale"])
-        img_index_base = str(memcot_cfg["img_index_base"])
+        self.img_index_base = str(memcot_cfg["img_index_base"])
 
         #通用设置
         self.agent_flag = agent_flag
@@ -215,13 +216,11 @@ class MemCoT:
             self.zoom_out_context_expansion = ZoomOutContextExpansion(
                 self.model, temperature=0.0, middle_scale=middle_scale
             )
-        # panoramic_visual_grounding
-        self.img_retriever = None
-        if agent_flag[2] == "1":
-            print("初始化视觉搜索...")
-            self.img_retriever = create_img_retriever(self.conv_id, img_index_base=img_index_base)
         # judge_agent
         self.judge_agent = JudgeAgent(self.model, temperature=0.0)
+
+        if conv_id:
+            self.switch_session(conv_id)
 
 
     def try_responder_answer_from_evidence(
@@ -255,6 +254,21 @@ class MemCoT:
         if category == 5:
             return 'If the answer is not mentioned in the conversation, answer "Not mentioned in the conversation".'
         return ""
+    
+    def switch_session(self, conv_id: str):
+        self.conv_id = conv_id
+        from agent.conversation import Conversation
+        self.conversation = Conversation(conv_id, self.benchmark, self.conversation_base, self.rag_base)
+        if hasattr(self.ragretriever, "load_rag"):
+            try:
+                self.ragretriever.load_rag(conv_id, self.rag_top_k)
+            except FileNotFoundError as e:
+                print(f"[🦉 MemCoT] Warning: {e}. RAG database not found. Please run 'add --idx <idx>' to build it.")
+        
+        # panoramic_visual_grounding
+        if self.agent_flag[2] == "1":
+            print("初始化视觉搜索...")
+            self.img_retriever = create_img_retriever(self.conv_id, img_index_base=self.img_index_base)
 
     def run(
         self,

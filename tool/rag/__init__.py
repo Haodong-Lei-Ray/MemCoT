@@ -23,7 +23,7 @@ __all__ = [
     "RAG_TYPE_CHOICES",
     "RAG_TYPE_LIGHTRAG",
     "RAG_TYPE_NAIVE",
-    "build_rag_retrieve",
+    "load_rag_retrieve",
     "create_img_retriever",
     "create_lightrag",
     "finalize_lightrag",

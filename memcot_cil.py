@@ -40,7 +40,7 @@ try:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         global memcot_instance
-        from tool.rag.rag import build_rag_retrieve
+        from tool.rag.rag import load_rag_retrieve
         from memcot import MemCoT
         
         rag_cfg = os.path.join(PROJECT_ROOT, "config", "rag", "openclawnaiverag.json")
@@ -48,7 +48,7 @@ try:
         grey_print(f"Loading RAG config from {rag_cfg}")
         
         # 临时获取 session 列表以确定 conv_id
-        temp_retriever, _ = build_rag_retrieve(rag_file_path=rag_cfg)
+        temp_retriever, _, _, _, _ = load_rag_retrieve(rag_file_path=rag_cfg)
         data = temp_retriever.get_session_list()
         sessions = data.get("sessions", [])
         if not sessions:

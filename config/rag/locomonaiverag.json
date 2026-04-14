@@ -1,7 +1,0 @@
-{
-  "rag_type": "naive",
-  "rag_topk": 10,
-  "rag_base": "/home/lei/Project/memory/naivrag/dialog",
-  "benchmark": "locomo",
-  "conversation_base": "/home/lei/Project/MemCoT/benchmark/locomo/data/con"
-}
