@@ -7,6 +7,7 @@ ANSI_BOLD = "\033[1m"
 ANSI_ORANGE = "\033[38;5;214m"
 ANSI_DIM = "\033[2m"
 ANSI_GRAY = "\033[38;5;245m"
+ANSI_LIGHT_GREEN = "\033[38;5;120m"
 
 
 def _use_color() -> bool:
@@ -19,6 +20,11 @@ def _c(text: str, color: str) -> str:
         return text
     return f"{color}{text}{ANSI_RESET}"
 
+def grey_print(text: str):
+    print(_c(text, ANSI_GRAY))
+
+def slight_green_print(text: str):
+    print(_c(text, ANSI_LIGHT_GREEN))
 
 def format_age(age_ms):
     if age_ms is None:

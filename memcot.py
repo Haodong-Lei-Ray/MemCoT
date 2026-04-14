@@ -66,6 +66,7 @@ from agent.agent import (
     WRONG_LIST,
 )
 from global_methods import run_chatgpt
+from tool.show.cil import grey_print
 
 DEFAULT_MODEL = "gpt-4o-mini"
 RAG_CONFIG_PATH = str(PROJECT_ROOT / "config" / "rag.json")
@@ -125,7 +126,7 @@ def finalize_memcot_exit(exit_state: MemCoTExit) -> dict:
         resp = run_chatgpt(
             prompt, model=model, num_tokens_request=1024, temperature=0.0
         )
-        if benchmark == "locomo":
+        if benchmark == "locomo" or benchmark == "openclaw":
             out = _parse_json_from_llm(resp)
             out_answer = out.get("answer", "")
             out_thinking = out.get("thinking", "")
@@ -281,7 +282,7 @@ class MemCoT:
             rag_view_missing_information = []
             temp_short_memory: list[dict] = []
             short_memory_dia_ids = [m.get("dia_id", "") for m in short_semantic_memory]
-            print(f"Query_queue: {query_queue}")
+            grey_print(f"[🦉 MemCoT] No.{step}: Query_queue: {query_queue}")
             assert len(query_queue) != 0
             # ─── zoom_in_focal_retrieve1 ───
             rag_results, rag_result_list = self.ragretriever.retrieve_multi(query_queue)
@@ -405,8 +406,6 @@ class MemCoT:
                     if i['dia_id'] in useful_evidence and i['dia_id'] not in short_memory_dia_ids:#如果临时记忆有的，但是短期记忆没有的
                         short_semantic_memory.append(i)
                         fail_query_flag = False
-            
-            print(f"No.{step}:")
             if fail_query_flag:
                 fail_episondic_queue_trajectory.append({"last_action":last_action,"query_queue":query_queue,"rag_view_report":rag_view_missing_information})#TODO:判断真不能靠这个判断obs agent来判断
                 fail_episondic_queue_trajectory=fail_episondic_queue_trajectory[:3]
@@ -419,6 +418,7 @@ class MemCoT:
             }
 
             obs_thinking = obs["thinking"]
+            grey_print(f"[🦉 MemCoT] Observation: {obs_thinking}")
             trajectory.append({
                 "Act": act_record,
                 "Observation": obs_record,
@@ -451,11 +451,11 @@ class MemCoT:
                     conversation=self.conversation,
                 )
                 return MemCoTExit(
+                    prompt=prompt,
+                    #次要
                     kind="evidence_ok",
                     output_dir=output_dir,
                     trajectory=trajectory,
-                    prompt=prompt,
-                    model=self.model,
                     benchmark=self.conversation.benchmark,
                     answer=answer,
                     answer_thinking=answer_thinking,
@@ -469,11 +469,11 @@ class MemCoT:
             conversation=self.conversation,
         )
         return MemCoTExit(
+            prompt=prompt,
+            #次要
             kind="fallback",
             output_dir=output_dir,
             trajectory=trajectory,
-            prompt=prompt,
-            model=self.model,
             benchmark=self.conversation.benchmark,
             full_conv=self.conversation.full_conv,
             max_step=self.max_step,

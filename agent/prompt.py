@@ -210,8 +210,18 @@ import tiktoken
 TOKENIZER = tiktoken.get_encoding("cl100k_base")
 
 def conv_answer_agent_prompt(full_conv, query, benchmark):
-    if benchmark == 'locomo' or benchmark == 'openclaw':
+    if benchmark == 'locomo':
         full_conv_text = full_conv
+        prompt = full_conv_text + "\n\n" + QA_PROMPT.format(query)
+    elif benchmark == 'openclaw':
+        lines = []
+        for msg in full_conv:
+            date_time = msg.get("date_time", "")
+            role = msg.get("role", "")
+            context = msg.get("context", "")
+            dt_str = f"[{date_time}] " if date_time else ""
+            lines.append(f"{dt_str}{role} said: {context}")
+        full_conv_text = "\n\n".join(lines)
         prompt = full_conv_text + "\n\n" + QA_PROMPT.format(query)
     elif benchmark == 'longmemeval':
         if not isinstance(full_conv, dict):

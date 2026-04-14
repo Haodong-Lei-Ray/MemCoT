@@ -3,6 +3,8 @@
 *.pyo
 *.pyd
 *.pdf
+*.log
+*.pid
 __pycache__/
 
 # Explicitly ignore cache under script

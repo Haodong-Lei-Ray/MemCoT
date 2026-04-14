@@ -676,7 +676,7 @@ def load_rag_retrieve(
         ragretriever = LightRagRetriever(working_dir, rag, top_k)
     else:
         raise ValueError(f"rag_type must be one of {RAG_TYPE_CHOICES}, got {rag_type!r}")
-    conversation = Conversation(conv_id, benchmark, conversation_base)
+    conversation = Conversation(conv_id, benchmark, conversation_base, rag_base)
     return ragretriever, conversation
 
 def build_rag_retrieve(

@@ -34,25 +34,6 @@ DEFAULT_MULTIMODAL_MODEL = "gpt-4o-mini"
 # LongMemEval 时间格式："2023/05/20 (Sat) 02:21"（参考 LOCOMO_CONVERSION_FEASIBILITY.md）
 _LONGMEMEVAL_DATE_FMT = "%Y/%m/%d (%a) %H:%M"
 
-
-def _estimate_input_tokens(text: str, model: str) -> int:
-    """Estimate input token count for logging."""
-    if not text:
-        number = 0
-    try:
-        import tiktoken
-
-        try:
-            enc = tiktoken.encoding_for_model(model)
-        except KeyError:
-            enc = tiktoken.get_encoding("cl100k_base")
-        number =  len(enc.encode(text))
-    except Exception:
-        # Fallback heuristic when tokenizer lib/model mapping is unavailable.
-        number =  max(1, len(text) // 4)
-    print(f"[rag_view_agent] input_tokens={number}")
-
-
 def _parse_longmemeval_date(s: str):
     """解析 LongMemEval 时间字符串为可排序的 datetime，解析失败返回 datetime.min。"""
     if not s or not isinstance(s, str):
@@ -128,8 +109,16 @@ def get_sort_key(
         dia_id = item.get("dia_id", "")
         sess_idx, turn_id, chunk_id = _parse_longmemeval_dia_id(dia_id, haystack_session_ids)
         return (dt, sess_idx, turn_id, chunk_id)
+    elif benchmark == "openclaw":
+        from datetime import datetime
+        dt_str = item.get("date_time", "")
+        try:
+            dt = datetime.strptime(dt_str, "%a %Y-%m-%d %H:%M GMT+8")
+            return dt.timestamp()
+        except Exception:
+            return 0
     else:
-        raise ValueError(f"Invalid benchmark: {benchmark}")
+        raise ValueError(f"get_sort_key Invalid benchmark: {benchmark}")
 
 def _format_short_rag_for_prompt(results: list[dict]) -> str:    
     result = [f"[{i}] ({r.get('date_time','')}) {r['context']}"
@@ -270,6 +259,7 @@ class ZoomInFocalRetrieve:
                 continue
         num_ids = out.get("useful_ids", [])
         num_ids = [int(i) if isinstance(i, str) else i for i in num_ids]
+        # num_ids = [i for i in num_ids if 0 <= i < len(rag_results_sort)]
         ids = [rag_results_sort[i] for i in num_ids] if len(num_ids) != 0 else []
         thinking = out.get("thinking")
         missing_information = out.get("missing_information")
@@ -412,6 +402,63 @@ class ZoomOutContextExpansion:
 
         return context_blocks, rag_results
 
+    def get_context_window4openclaw(
+        self, temp_useful_rag: list[dict], full_conv: list[dict], dia_id_to_idx: dict
+    ) -> tuple[list[str], list[dict]]:
+        """
+        OpenClaw: 整个 session 在 full_conv 中。
+        针对每个检索到的证据（temp_useful_rag），在 full_conv 中取前后 self.W 条对话。
+        合并所有窗口，去重，并按照指定格式输出。
+        """
+        # ==========================================
+        # 1. 获取所有相关的上下文 evidence (E_all) 并去重
+        # ==========================================
+        e_all_indices = set()
+        for mem in temp_useful_rag:
+            dia_id = mem.get("dia_id")
+            if dia_id in dia_id_to_idx:
+                idx = dia_id_to_idx[dia_id]
+                # 扩展窗口：前后各取 self.W 条
+                start_idx = max(0, idx - self.W)
+                end_idx = min(len(full_conv), idx + self.W + 1)
+                
+                for i in range(start_idx, end_idx):
+                    e_all_indices.add(i)
+                    
+        # ==========================================
+        # 2. 将去重后的 evidence 转换为所需的输出格式
+        # ==========================================
+        context_blocks = []
+        rag_results = []
+        
+        # 按原始对话顺序排序
+        sorted_indices = sorted(list(e_all_indices))
+        
+        lines = []
+        for idx_i, orig_idx in enumerate(sorted_indices):
+            msg = full_conv[orig_idx]
+            role = msg.get("role", "Unknown")
+            content = msg.get("context", "")
+            date_time = msg.get("date_time", "")
+            dia_id = msg.get("dia_id", "")
+            
+            # 格式化为: idx_i: role: "content"
+            lines.append(f'{idx_i}: {role}: "{content}"')
+            
+            # 构建 rag_results 项
+            rag_item = {
+                "dia_id": dia_id,
+                "date_time": date_time,
+                "context": f'{role} said, "{content}"'
+            }
+            rag_results.append(rag_item)
+            
+        if lines:
+            # 将所有行合并为一个 context_block
+            context_blocks.append("\n".join(lines))
+            
+        return context_blocks, rag_results
+
     def run(
         self,
         root_query: str,
@@ -440,6 +487,10 @@ class ZoomOutContextExpansion:
                 haystack_session_ids or [],
                 full_conv=full_conv,
             )
+        elif benchmark == "openclaw":
+            context_blocks, rag_results = self.get_context_window4openclaw(
+                temp_short_memory, full_conv, conversation.dia_id_to_idx
+            )
         else:
             raise ValueError(f"Invalid benchmark: {benchmark}")
         middle_context_text = "\n\n".join(context_blocks)
@@ -455,8 +506,8 @@ class ZoomOutContextExpansion:
         )
         known_information = f'Known information: {known_info_text}' if known_info_text else ''
 
-        prompt = middle_view_agent_prompt(query_information, known_information,middle_context_text,benchmark)
-        _estimate_input_tokens(prompt, self.model)
+        prompt = middle_view_agent_prompt(query_information, known_information, middle_context_text, benchmark)
+        
         resp = run_chatgpt(
             prompt,
             model=self.model,
@@ -466,9 +517,10 @@ class ZoomOutContextExpansion:
         out = _parse_json_from_llm(resp)
         num_ids = out.get("useful_ids", [])
         num_ids = [int(i) if isinstance(i, str) else i for i in num_ids]
+        # num_ids = [i for i in num_ids if 0 <= i < len(rag_results)]
         ids = [rag_results[i] for i in num_ids] if len(num_ids) != 0 else []
         thinking = out.get("thinking")
-        # thinking_choice = out.get("thinking_choice")
+        
         missing_information = out.get("missing_information")
         
         return {
@@ -752,7 +804,6 @@ class JudgeAgent:
         t = self.temperature
         while repeat_flag:
             step -= 1
-            _estimate_input_tokens(prompt, self.model)
             resp = run_chatgpt(
                 prompt,
                 model=self.model,

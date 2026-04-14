@@ -126,7 +126,6 @@ def set_openai_key():
 
 def run_json_trials(query, num_gen=1, num_tokens_request=1000, 
                 model='davinci', use_16k=False, temperature=1.0, wait_time=1, examples=None, input=None):
-
     run_loop = True
     counter = 0
     while run_loop:
@@ -188,9 +187,29 @@ def run_gemini(model, content: str, max_tokens: int = 0):
         return None
 
 
+def _estimate_input_tokens(text: str, model: str) -> int:
+    """Estimate input token count for logging."""
+    if not text:
+        number = 0
+    try:
+        import tiktoken
+
+        try:
+            enc = tiktoken.encoding_for_model(model)
+        except KeyError:
+            enc = tiktoken.get_encoding("cl100k_base")
+        number =  len(enc.encode(text))
+    except Exception:
+        # Fallback heuristic when tokenizer lib/model mapping is unavailable.
+        number =  max(1, len(text) // 4)
+    print(f"[rag_view_agent] input_tokens={number}")
+
 def run_chatgpt(query, num_gen=1, num_tokens_request=1000, 
                 model='chatgpt', use_16k=False, temperature=1.0, wait_time=1):
     from openai import APIError, APIConnectionError, RateLimitError
+    caculation_token_flag=False
+    if caculation_token_flag:
+        _estimate_input_tokens(query, model)
 
     client = get_openai_client()
     completion = None

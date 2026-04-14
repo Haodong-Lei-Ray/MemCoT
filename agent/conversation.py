@@ -90,14 +90,29 @@ def _build_full_conv_context_locomo(conv_id: str, file_path: str | Path | None =
     return start_prompt + "\n\n".join(blocks)
 
 
-def _build_full_conv_context_openclaw(conv_id: str) -> str:
+def _build_full_conv_context_openclaw(conv_id: str, conversation_base: str, rag_base: str) -> list[dict]:
     """OpenClaw 预留的对话上下文构建函数。"""
-    # 这里暂时返回空字符串，未来可以根据 OpenClaw 的对话数据格式进行实现。
-    return ""
+    import os
+    import json
+    from tool.rag.rag import NaiveRagRetriever
+    
+    session_file = os.path.join(rag_base, "session", f"{conv_id}.json")
+    
+    if not os.path.exists(session_file):
+        print(f"[🦉 MemCoT] Washed data not found for {conv_id}, washing now...")
+        retriever = NaiveRagRetriever(working_dir=rag_base, conversation_base=conversation_base)
+        sessions_data = retriever.get_session_list()
+        idx = next((s["index"] for s in sessions_data.get("sessions", []) if s.get("sessionId") == conv_id), 0)
+        retriever.wash_data(idx=idx)
+        
+    with open(session_file, "r", encoding="utf-8") as f:
+        washed_data = json.load(f)
+        
+    return washed_data.get("session", [])
 
 #OpenClaw
 class Conversation:
-    def __init__(self, conv_id: str, benchmark: str, conversation_base: str | Path | None = None):
+    def __init__(self, conv_id: str, benchmark: str, conversation_base: str | Path | None = None, rag_base: str | Path | None = None):
         self.conv_id = conv_id
         self.benchmark = benchmark
         self.haystack_session_ids = None
@@ -111,7 +126,9 @@ class Conversation:
         elif self.benchmark == "locomo":
             self.full_conv = _build_full_conv_context_locomo(conv_id, conversation_base)
         elif self.benchmark == "openclaw":
-            #openclaw预留的，你别动
-            self.full_conv = _build_full_conv_context_openclaw(conv_id)
+            # openclaw 载入完整的 session 记录
+            self.full_conv = _build_full_conv_context_openclaw(conv_id, conversation_base, rag_base)
+            # 建立 dia_id 到 full_conv 索引的映射，供 agent 长期使用
+            self.dia_id_to_idx = {msg["dia_id"]: i for i, msg in enumerate(self.full_conv) if "dia_id" in msg}
         else:
             raise ValueError(f"Unsupported benchmark: {benchmark}")
