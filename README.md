@@ -10,7 +10,7 @@ cd MemCoT
 
 推荐使用 Conda 创建虚拟环境：
 ```bash
-conda create -n memcot python=3.10
+conda create -n memcot python=3.10 -y
 conda activate memcot
 ```
 
