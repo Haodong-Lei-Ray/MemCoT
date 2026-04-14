@@ -1,7 +1,7 @@
 {
   "rag_type": "naive",
   "rag_topk": 10,
-  "rag_base": "/home/lei/Project/memory/naivrag/openclaw/dialog",
+  "rag_base": "",
   "benchmark": "openclaw",
-  "conversation_base": "/home/lei/.openclaw/agents/main/sessions"
+  "conversation_base": ".openclaw/agents/main/sessions"
 }
