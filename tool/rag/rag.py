@@ -259,6 +259,33 @@ class NaiveRagRetriever:
             data["session_file"] = session_file
             with open(session_file, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
+                
+        # 动态检测每个 session 的 rag_status
+        for item in data.get("sessions", []):
+            session_id = item.get("sessionId")
+            if session_id:
+                washed_file = os.path.join(self.working_dir, "session", f"{session_id}.json")
+                if os.path.exists(washed_file):
+                    try:
+                        with open(washed_file, "r", encoding="utf-8") as f:
+                            washed_data = json.load(f)
+                        washed_session = washed_data.get("session", [])
+                        if washed_session and all(msg.get("rag_status") == "success" for msg in washed_session):
+                            item["rag_status"] = "Success"
+                        else:
+                            item["rag_status"] = "fail"
+                    except Exception:
+                        item["rag_status"] = "fail"
+                else:
+                    item["rag_status"] = "fail"
+            else:
+                item["rag_status"] = "fail"
+                
+        # 保存更新后的状态
+        with open(session_file, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+
+        from tool.show import cil
         cil.show_session_list(data)
         return data
     

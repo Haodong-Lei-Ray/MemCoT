@@ -8,6 +8,7 @@ ANSI_ORANGE = "\033[38;5;214m"
 ANSI_DIM = "\033[2m"
 ANSI_GRAY = "\033[38;5;245m"
 ANSI_LIGHT_GREEN = "\033[38;5;120m"
+ANSI_RED = "\033[31m"
 
 
 def _use_color() -> bool:
@@ -88,5 +89,8 @@ def show_session_list(data):
         
         idx_col = f"{str(idx):<4}"
         mid_cols = f"{kind:<6} {key:<26} {age:<9} {model:<14} {tokens:<20} {flags_str:<46}"
-        rag_col = f"{rag_status}"
-        print(f"{_c(idx_col, ANSI_ORANGE)} {_c(mid_cols, ANSI_GRAY)} {_c(rag_col, ANSI_ORANGE)}")
+        if rag_status == "Success":
+            rag_col = _c(f"{rag_status}", ANSI_RED)
+        else:
+            rag_col = _c(f"{rag_status}", ANSI_ORANGE)
+        print(f"{_c(idx_col, ANSI_ORANGE)} {_c(mid_cols, ANSI_GRAY)} {rag_col}")
