@@ -106,7 +106,7 @@ try:
     def search_session(req: SearchRequest):
         if not memcot_instance:
             raise HTTPException(status_code=500, detail="MemCoT not initialized")
-        from memcot import finalize_memcot_exit
+        from memcot import answer_memcot_exit
         
         try:
             slight_green_print(
@@ -128,7 +128,7 @@ try:
                     "stopped_reason": "prompt_only",
                 }
             else:
-                result = finalize_memcot_exit(exit_state)
+                result = answer_memcot_exit(exit_state)
             return result
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))

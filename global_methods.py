@@ -207,6 +207,7 @@ def _estimate_input_tokens(text: str, model: str) -> int:
 def run_chatgpt(query, num_gen=1, num_tokens_request=1000, 
                 model='chatgpt', use_16k=False, temperature=1.0, wait_time=1):
     from openai import APIError, APIConnectionError, RateLimitError
+    print(f"[run_chatgpt] model={model!r}")
     caculation_token_flag=False
     if caculation_token_flag:
         _estimate_input_tokens(query, model)

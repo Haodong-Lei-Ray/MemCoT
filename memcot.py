@@ -68,7 +68,7 @@ from agent.agent import (
 from global_methods import run_chatgpt
 from tool.show.cil import grey_print, morandi_print, morandi_blue_print
 
-RAG_CONFIG_PATH = str(PROJECT_ROOT / "config" / "rag.json")
+RAG_CONFIG_PATH = str(PROJECT_ROOT / "config" / "rag" / "locomolightrag.json")
 MEMCOT_CONFIG_PATH = str(PROJECT_ROOT / "config" / "memcot.json")
 
 def _load_memcot_config(path: str | Path) -> dict:
@@ -110,7 +110,7 @@ def _save_json(data, path: str):
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
-def finalize_memcot_exit(exit_state: MemCoTExit) -> dict:
+def answer_memcot_exit(exit_state: MemCoTExit) -> dict:
     """
     根据 MemCoT 退出状态完成 Responder 收尾（使用 exit_state.prompt 与 model/benchmark）。
     evidence_ok：run_chatgpt + 与 answer_agent 一致的解析。
@@ -145,12 +145,13 @@ def finalize_memcot_exit(exit_state: MemCoTExit) -> dict:
             "trajectory": exit_state.trajectory,
         }
         _save_json(result, os.path.join(exit_state.output_dir, "result.json"))
+        print(f"Answer: {out_answer}")
         return result
 
     assert exit_state.full_conv is not None
-    temperature = 0.0
+
     resp = run_chatgpt(
-        prompt, model=model, num_tokens_request=64, temperature=temperature
+        prompt, model=model, num_tokens_request=64, temperature=0.0
     )
     conv_view_result = {"thinking": "", "answer": resp}
     answer = conv_view_result["answer"]
@@ -225,23 +226,16 @@ class MemCoT:
 
     def try_responder_answer_from_evidence(
         self,
-        query: str,
-        short_memory: list[dict],
-        obs_report: str,
-        additional_information: str,
+        prompt: str,
     ) -> Optional[tuple[str, str]]:
         """
         Responder：在固定证据上调用 answer_agent；使用实例上的 model / benchmark。
         答案为空或在 WRONG_LIST 中则返回 None。
         """
         ans = answer_agent(
-            query,
-            short_memory,
+            prompt,
             model=self.model,
-            obs_report=obs_report,
-            additional_information=additional_information,
             benchmark=self.conversation.benchmark,
-            haystack_session_ids=self.conversation.haystack_session_ids,
         )
         answer = ans.get("answer", "")
         thinking = ans.get("thinking", "")
@@ -292,7 +286,7 @@ class MemCoT:
     ) -> MemCoTExit:
         """
         单次 QA：在已绑定的 conv / RAG 上检索并回答。
-        返回 MemCoTExit；请用 finalize_memcot_exit(exit_state) 落盘。
+        返回 MemCoTExit；请用 answer_memcot_exit(exit_state) 落盘。
         """
         assert output_dir is not None
         os.makedirs(output_dir, exist_ok=True)
@@ -474,15 +468,6 @@ class MemCoT:
             # ─── 机械判断 ───
             if obs["can_answer"] or step == self.max_step - 1:
                 short_memory_dia_ids_out = [m.get("dia_id", "") for m in short_semantic_memory]
-                accepted = self.try_responder_answer_from_evidence(
-                    query=query,
-                    short_memory=short_semantic_memory,
-                    obs_report=obs_thinking,
-                    additional_information=additional_information,
-                )
-                if accepted is None:
-                    continue
-                answer, answer_thinking = accepted
                 prompt = return_answer_agent_prompt(
                     query,
                     short_semantic_memory,
@@ -490,12 +475,19 @@ class MemCoT:
                     additional_information=additional_information,
                     conversation=self.conversation,
                 )
+                ans = self.try_responder_answer_from_evidence(
+                    prompt=prompt,
+                )
+                answer, answer_thinking = ans
+                if answer == '' or answer in WRONG_LIST:
+                    continue
                 return MemCoTExit(
                     prompt=prompt,
                     #次要
                     kind="evidence_ok",
                     output_dir=output_dir,
                     trajectory=trajectory,
+                    model=self.model,
                     benchmark=self.conversation.benchmark,
                     answer=answer,
                     answer_thinking=answer_thinking,
@@ -514,6 +506,7 @@ class MemCoT:
             kind="fallback",
             output_dir=output_dir,
             trajectory=trajectory,
+            model=self.model,
             benchmark=self.conversation.benchmark,
             full_conv=self.conversation.full_conv,
             max_step=self.max_step,
@@ -537,13 +530,6 @@ if __name__ == "__main__":
         default=MEMCOT_CONFIG_PATH,
         help=f"Path to memcot config json (default: {MEMCOT_CONFIG_PATH})",
     )
-    parser.add_argument(
-        "-k",
-        "--rag-topk",
-        type=int,
-        default=None,
-        help="RAG top-k override (default: use rag config value)",
-    )
     # benchmark
     parser.add_argument("-c", "--conv-id", default="conv-26", help="Conversation ID")
     args = parser.parse_args()
@@ -552,15 +538,16 @@ if __name__ == "__main__":
         model=args.model,
         memcot_file_path=args.memcot_config,
         rag_file_path=args.rag_config,
-        rag_top_k=args.rag_topk,
-        conv_id=args.conv_id,
+        rag_top_k=10,
+        conv_id=None,
     )
+    memcot.switch_session(conv_id=args.conv_id)
     try:
         exit_state = memcot.run(
             query=query,
             output_dir=args.output_dir
         )
-        finalize_memcot_exit(exit_state)
+        answer_memcot_exit(exit_state)
     finally:
         if getattr(memcot.ragretriever, "rag_type", None) == RAG_TYPE_LIGHTRAG:
             finalize_lightrag(memcot.ragretriever.light_rag)

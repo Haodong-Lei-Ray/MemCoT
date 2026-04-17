@@ -176,7 +176,7 @@ def answer_agent_prompt(additional_information_text, short_memory_text, query,be
     if benchmark == 'locomo' or benchmark == 'openclaw':
         prompt =f"""
 CRITICAL RULES:
-1. Ultra-Concise Answer: The "answer" MUST be an extremely short entity, number, or absolute date.
+1. Ultra-Concise Answer: The "answer" MUST be an extremely short entity, number, or absolute date like what year what day.
 2. For yes/no questions (Would/Did/Is/Does...?), answer yes or no, or the given choice. For how many, answer english word, like two,three,twice.
 {additional_information_text}
 {short_memory_text}
@@ -200,7 +200,6 @@ Query: {query}
     else:
         raise ValueError(f"Unsupported benchmark: {benchmark}")
     return prompt
-
 
 from task_eval.gpt_utils import QA_PROMPT, QA_PROMPT_CAT_5, CONV_START_PROMPT
 from .format_tool import _build_full_conv_context_from_entry

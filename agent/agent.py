@@ -802,12 +802,13 @@ class JudgeAgent:
         repeat_flag = True
         step = 5
         t = self.temperature
+        num_tokens_request=1024
         while repeat_flag:
             step -= 1
             resp = run_chatgpt(
                 prompt,
                 model=self.model,
-                num_tokens_request=1024,
+                num_tokens_request=num_tokens_request,
                 temperature=t,
             )
             out = _parse_json_from_llm(resp)
@@ -827,7 +828,7 @@ class JudgeAgent:
             else:
                 print(f"Repeat!!!!! {new_queries}")
                 prompt += (
-                    "\nnIMPORTANT: You can just break query as the only one **keywords or some phases**."
+                    "\nnIMPORTANT: You can just break query as the only one **keywords or some phases**. Like red, Shanghai..."
                 )
             if step in [2, 1]:
                 prompt += (
@@ -836,6 +837,7 @@ class JudgeAgent:
                     'new_queries=["keyword1"]. The query could be declarative sentence.'
                 )
             t += 0.5
+            num_tokens_request = int(num_tokens_request/2)
             t = max(t, 1.0)
             if step <= 0:
                 raise ValueError("Bug: new_queries == []")
@@ -855,23 +857,13 @@ class JudgeAgent:
             "new_queries": new_queries,
         }
 
-def answer_agent(query: str, short_memory: list[dict], obs_report: str, model: str, additional_information: str = "", benchmark: str = "locomo", haystack_session_ids: list[str] | None = None) -> dict:
+def answer_agent(prompt: str, model: str, benchmark: str = "locomo") -> dict:
     """
-    Observation: 用 query 比对 RAG 结果（含原文对话，便于推断时间等）。
-    返回: {can_answer: bool, answer: str, useful_indices: [0,1,...]}  # indices 为可能有效的 RAG 序号(1-based)
+    Responder: 使用已经拼接好的 prompt 调用 LLM。
+    返回: {thinking: str, answer: str}
     """
-    
-    rag_results_sort = sorted(
-        short_memory,
-        key=lambda x: get_sort_key(x, benchmark, haystack_session_ids=haystack_session_ids),
-    )
-    short_memory,_ = _format_short_rag_for_prompt(rag_results_sort)
-    short_memory_text = "Short Memory:\n"+"\n".join(short_memory) if short_memory else ''
-    # additional_information_text = "3.IF you can not answer by Short Memory, just follow this thinking and answer: "+additional_information if additional_information else ''
-    additional_information_text = ''
-    prompt = answer_agent_prompt(additional_information_text, short_memory_text, query, benchmark)
     resp = run_chatgpt(prompt, model=model, num_tokens_request=1024, temperature=0.0)
-    if benchmark == 'locomo':
+    if benchmark == 'locomo' or benchmark == 'openclaw':
         out = _parse_json_from_llm(resp)
         answer = out.get("answer",'')
         thinking = out.get("thinking",'')
@@ -887,47 +879,6 @@ def answer_agent(query: str, short_memory: list[dict], obs_report: str, model: s
             "thinking": resp,
             "answer": resp,
         }
-
-
-def guess_answer_agent(query: str, short_memory: list[dict], obs_report: str, model: str, additional_information: str = "", benchmark: str = "locomo", haystack_session_ids: list[str] | None = None) -> dict:
-    """
-    Observation: 用 query 比对 RAG 结果（含原文对话，便于推断时间等）。
-    返回: {can_answer: bool, answer: str, useful_indices: [0,1,...]}  # indices 为可能有效的 RAG 序号(1-based)
-    """
-    
-    rag_results_sort = sorted(
-        short_memory,
-        key=lambda x: get_sort_key(x, benchmark, haystack_session_ids=haystack_session_ids),
-    )
-    short_memory,_ = _format_short_rag_for_prompt(rag_results_sort)
-    short_memory_text = "Short Memory:"+"\n".join(short_memory) if short_memory else ''
-    # Use the session date_time in original dialogues to infer temporal answers (e.g. "last year" + session date -> concrete year).
-    additional_information_text = "IF you can not answer by Short Memory, just follow this thinking and answer: "+additional_information if additional_information else ''
-    prompt = f"""You must answer a specific time if you can know the time.
-For yes/no questions (Would/Did/Is/Does...?), answer yes or no, or the given choice.
-Query: {query}
-{short_memory_text}
-Observation: {obs_report}
-{additional_information_text}
-Output a JSON object: 
-1.thinking: Thinking hard and more for the answer. Calculated absolute date from session context if possible. Extracted target entity.
-2.answer: Write the answer in the form of **a short phrase**. Answer with **exact words** from the context if possible. You can **not** let answer empty.
-
-Output a JSON object exactly following this structure:
-{{
-    "thinking": "...",
-    "answer": "..."
-}}
-"""
-    # Above is all we know, you must answer.
-    resp = run_chatgpt(prompt, model=model, num_tokens_request=2048, temperature=0.0)
-    out = _parse_json_from_llm(resp)
-    answer = out.get("answer",'')
-    assert answer != ''
-    return {
-        "report": (out.get("thinking") or "").strip(),
-        "answer": answer,
-    }
 
 def conv_answer_agent(
     root_query: str,

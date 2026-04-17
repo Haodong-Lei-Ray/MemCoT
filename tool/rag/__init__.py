@@ -10,7 +10,6 @@ from .rag import (
     RAG_TYPE_NAIVE,
     load_rag_retrieve,
     create_img_retriever,
-    create_lightrag,
     finalize_lightrag,
     get_rag_event_loop,
 )
@@ -25,7 +24,6 @@ __all__ = [
     "RAG_TYPE_NAIVE",
     "load_rag_retrieve",
     "create_img_retriever",
-    "create_lightrag",
     "finalize_lightrag",
     "get_rag_event_loop",
 ]
