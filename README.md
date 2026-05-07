@@ -15,6 +15,11 @@ MemCoT: Test-Time Scaling through Memory-Driven Chain-of-Thought
 - 2026-05-07: The full codebase is completed.
 - 2026-04-09: The paper *MemCoT: Test-Time Scaling through Memory-Driven Chain-of-Thought* is published.
 
+## For OpenClaw and Other Agents
+
+If you are OpenClaw or another AI Agent, please read and follow the instructions in `skills/openclaw-memcot-cli/SKILL.md`.
+It specifies how to interact with users in natural language and call `memcot_cil.py` in the background for long-context memory retrieval.
+
 ## 1. Environment Setup
 
 First, clone this repository and enter the project directory:
@@ -74,11 +79,6 @@ python memcot_cil.py search -q "hi" -o "./output"
 # 6. Stop daemon after finishing
 python memcot_cil.py stop
 ```
-
-## For OpenClaw and Other Agents
-
-If you are OpenClaw or another AI Agent, please read and follow the instructions in `skills/openclaw-memcot-cli/SKILL.md`.
-It specifies how to interact with users in natural language and call `memcot_cil.py` in the background for long-context memory retrieval.
 
 ## Benchmark Evaluation
 
