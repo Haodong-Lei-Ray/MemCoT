@@ -1,71 +1,100 @@
-# MemCoT: Test-Time Scaling through Memory-Driven Chain-of-Thought
+<p align="center">
+  <img src="asset/banner.png" alt="MemCoT Banner" width="100%">
+</p>
 
-## 1. 环境安装
+# MemCoT 🦉
+MemCoT: Test-Time Scaling through Memory-Driven Chain-of-Thought
 
-首先，克隆本仓库并进入项目目录：
+<p align="center">
+  <a href="./README_zh.md"><img src="https://img.shields.io/badge/Lang-%E4%B8%AD%E6%96%87-red?style=for-the-badge" alt="Chinese Version"></a>
+  <a href="https://arxiv.org/abs/2604.08216"><img src="https://img.shields.io/badge/Paper-arXiv%3A2604.08216-9cf?style=for-the-badge" alt="Paper"></a>
+</p>
+
+## 🚩 NEWS
+
+- 2026-05-07: The full codebase is completed.
+- 2026-04-09: The paper *MemCoT: Test-Time Scaling through Memory-Driven Chain-of-Thought* is published.
+
+## 1. Environment Setup
+
+First, clone this repository and enter the project directory:
 ```bash
 git https://github.com/Haodong-Lei-Ray/MemCoT.git
 cd MemCoT
 ```
 
-推荐使用 Conda 创建虚拟环境：
+It is recommended to create a virtual environment with Conda:
 ```bash
 conda create -n memcot python=3.10 -y
 conda activate memcot
 ```
 
-安装所需依赖（已包含 `fastapi` 等后台守护进程所需库）：
+Install required dependencies (including libraries needed for the daemon service such as `fastapi`):
 ```bash
 pip install -r re.txt
 ```
 
-## 2. 命令行工具 (CLI)
+## 2. Command-Line Interface (CLI)
 
-MemCoT 提供了一个基于 C/S 架构的命令行工具 `memcot_cil.py`，支持在后台常驻运行 MemCoT 实例，并提供快速的检索问答服务。
+MemCoT provides a C/S-style command-line tool, `memcot_cil.py`, which supports running a persistent MemCoT instance in the background and provides fast retrieval-based QA service.
 
-支持的命令如下：
-- `start`：在后台启动 MemCoT 守护进程 (Daemon)。日志将自动写入 `memcot_daemon.log`。
-- `stop`：停止后台运行的守护进程。
-- `status`：查看当前守护进程的运行状态。
-- `session`：列出当前所有可用的会话 (Session) 及其 RAG 状态。
-- `add --idx <N>`：为指定索引 `N` 的会话构建 RAG 索引 (Embedding) 并保存。
-- `switch --idx <N>`：根据索引 `N` 切换当前会话 (Session)。
-- `search -q "<query>" -o "<dir>"`：在已加载的会话中搜索指定问题，并生成回答，结果保存在指定目录。
-- `logshow`：实时监控后台守护进程的日志输出（类似 `tail -f`，按 `Ctrl+C` 退出监控）。
+Supported commands:
+- `start`: Start the MemCoT daemon in the background. Logs are written to `memcot_daemon.log`.
+- `stop`: Stop the running daemon process.
+- `status`: Check current daemon status.
+- `session`: List all available sessions and their RAG status.
+- `add --idx <N>`: Build and save a RAG index (embedding) for session index `N`.
+- `switch --idx <N>`: Switch to session index `N`.
+- `search -q "<query>" -o "<dir>"`: Search the loaded session and generate an answer; outputs are saved to the target directory.
+- `logshow`: Monitor daemon logs in real time (similar to `tail -f`, press `Ctrl+C` to exit).
 
-## 3. 快速开始示例
+## 3. Quick Start Example
 
-以下是一个完整的运行示例，展示了如何启动服务、构建索引、进行搜索并停止服务：
+Below is a complete Python workflow example that shows how to start the service, build index, run search, and stop the service:
 
 ```bash
-# 1. 启动后台守护进程
+# 1. Start daemon
 python memcot_cil.py start
 
-# (可选) 实时查看日志
+# (Optional) Monitor logs in real time
 python memcot_cil.py logshow
 
-# 2. 查看所有可用的会话列表
+# 2. List available sessions
 python memcot_cil.py session
 
-# 3. 选择一个会话（例如 idx=0）构建 RAG 索引
+# 3. Build RAG index for one session (e.g., idx=0)
 python memcot_cil.py add --idx 0
 
-# 4. 切换到构建好的会话
+# 4. Switch to the indexed session
 python memcot_cil.py switch --idx 0
 
-# 5. 执行搜索查询
+# 5. Execute a search query
 python memcot_cil.py search -q "hi" -o "./output"
 
-# 6. 任务完成后，停止守护进程
+# 6. Stop daemon after finishing
 python memcot_cil.py stop
 ```
 
-## Openclaw等Agent请读这个
+## For OpenClaw and Other Agents
 
-如果你是 OpenClaw 或其他 AI Agent，请务必阅读并遵循 `skills/openclaw-memcot-cli/SKILL.md` 中的指令。
-它详细规定了你如何通过自然语言与用户交互，并在后台调用 `memcot_cil.py` 进行长文本记忆检索。
+If you are OpenClaw or another AI Agent, please read and follow the instructions in `skills/openclaw-memcot-cli/SKILL.md`.
+It specifies how to interact with users in natural language and call `memcot_cil.py` in the background for long-context memory retrieval.
 
-##  评测 (For Benchmark)
+## Benchmark Evaluation
+
+### LoCoMo
+
+Please set the following environment variables in `script/run_locomo_qwen_14b.sh` in advance:
+- `OPENAI_API_KEY`
+- `OPENAI_BASE_URL`
+
+Then run:
+
+```bash
+bash /home/lei/Project/MemCoT/script/run_locomo_qwen_14b.sh
+```
+
+### LongMemEval
 
 TODO
 

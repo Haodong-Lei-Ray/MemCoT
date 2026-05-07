@@ -7,6 +7,8 @@
 *.pid
 __pycache__/
 tests/
+output/
+docs/
 
 # Explicitly ignore cache under script
 script/__pycache__/
