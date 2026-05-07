@@ -1,0 +1,7 @@
+{
+  "rag_type": "lightrag",
+  "rag_topk": 10,
+  "rag_base": "/home/lei/Project/memory/longmemeval/lightrag/te3s",
+  "benchmark": "longmemeval",
+  "conversation_base": "/home/lei/Project/MemCoT/benchmark/longmemeval/data/longmemeval_s_cleaned.json"
+}

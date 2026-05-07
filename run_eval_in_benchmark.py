@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """
-Evaluate ReAct+LightRAG on the first 20 QA pairs of conv-26.
-Same F1 logic as eval_event_search_top20.py.
-Output: eval_output/<model>_rag_topk{N}/conv26_react_lightrag_top20_f1.json
+Evaluate MemCoT on locomo or longmemeval benchmarks.
+Adapted to use the MemCoT class from memcot.py directly.
 """
 
 import argparse
@@ -20,35 +19,17 @@ from nltk.stem import PorterStemmer
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(PROJECT_ROOT))
-from dmsmem import (
-    create_lightrag,
-    finalize_lightrag,
-    create_img_retriever,
-    _conv_id_to_workspace,
-    DEFAULT_LIGHTRAG_WORKING_BASE,
-    DEFAULT_IMG_INDEX_BASE,
-    FULL_VIEW_SESS_NUM,
-    RAG_TYPE_LIGHTRAG,
-    RAG_TYPE_NAIVE,
-    RAG_TYPE_CHOICES,
-    DEFAULT_AGENT_FLAG,
-)
-from one_line import run_react_lightrag
-from agent.agent import _build_full_conv_context
+from memcot import MemCoT, answer_memcot_exit
 
 ps = PorterStemmer()
 
-DATA_PATH = PROJECT_ROOT / "benchmark" / "locomo" / "data" / "locomo10.json"
-DEFAULT_OUTPUT_DIR = Path(__file__).parent / "eval_output"
-DEFAULT_MODEL = "Qwen/Qwen2.5-14B-Instruct"
+DEFAULT_OUTPUT_DIR = Path(__file__).parent / "output"
 NUM_QA = 20
-DEFAULT_RAG_TOPK = 10
 
-
-# ──────────────── F1 computation (from task_eval/evaluation.py) ────────────
+# ──────────────── F1 computation (for Locomo) ────────────
 
 def normalize_answer(s):
-    s = s.replace(",", "")
+    s = str(s).replace(",", "")
     def remove_articles(text):
         return regex.sub(r'\b(a|an|the|and)\b', ' ', text)
     def white_space_fix(text):
@@ -84,15 +65,8 @@ def f1_multi(prediction, ground_truth):
 
 
 def compute_f1_for_qa(prediction, answer, category):
-    """
-    F1 计算与 task_eval/evaluation.py 一致，参考 docs/locomo_category5_f1_adversarial.md：
-    - Category 1: multi-hop，f1_multi（子答案拆分）
-    - Category 2,3,4: single-hop，f1_score_single
-    - Category 5: 对抗题，二值判断，不看 answer，仅看 prediction 是否表示"未提及"
-    """
     prediction = str(prediction or "")
     answer = str(answer or "")
-
     if category == 3:
         answer = answer.split(';')[0].strip()
 
@@ -101,8 +75,6 @@ def compute_f1_for_qa(prediction, answer, category):
     elif category == 1:
         return round(f1_multi(prediction, answer), 3)
     elif category == 5:
-        # Category 5: 正确答案为 "Not mentioned" / "No information available"
-        # 二值判断：含以下任一子串 → 1，否则 0（参考 locomo_category5_f1_adversarial.md）
         pred_lower = prediction.lower()
         if "no information" in pred_lower or "not mentioned" in pred_lower:
             return 1.0
@@ -114,41 +86,33 @@ def compute_f1_for_qa(prediction, answer, category):
 # ──────────────── Main ─────────────────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser(description="Evaluate ReAct+LightRAG on conv-26 top 20 QA")
-    parser.add_argument("-m", "--model", default=DEFAULT_MODEL, help=f"Model name (default: {DEFAULT_MODEL})")
+    parser = argparse.ArgumentParser(description="Evaluate MemCoT on Locomo/Longmemeval")
     parser.add_argument("-n", "--num-qa", type=int, default=NUM_QA, help=f"Number of QA pairs (default: {NUM_QA})")
-    parser.add_argument("-k", "--rag-topk", type=int, default=DEFAULT_RAG_TOPK, help=f"LightRAG top-k (default: {DEFAULT_RAG_TOPK})")
-    parser.add_argument(
-        "--rag-type",
-        choices=RAG_TYPE_CHOICES,
-        default=RAG_TYPE_LIGHTRAG,
-        help=f"RAG 类型: naive=向量检索(pkl@naiverag), lightrag=LightRAG 知识图谱 (default: {RAG_TYPE_LIGHTRAG})",
-    )
-    parser.add_argument("--max-step", type=int, default=10, help="Max ReAct loop steps (default: 10)")
     parser.add_argument("-o", "--output-dir", default=None, help="Output directory")
     parser.add_argument("--resume", action="store_true", help="Resume from existing output JSON")
-    parser.add_argument("--skip-category", type=int, nargs="*", default=[], help="Skip QA categories (e.g. --skip-category 1 2 3 4)")
-    parser.add_argument("--rag-base", default=DEFAULT_LIGHTRAG_WORKING_BASE,
-                        help=f"LightRAG 索引根目录 (default: {DEFAULT_LIGHTRAG_WORKING_BASE})")
-    parser.add_argument("--sample-id", "--conv", dest="sample_id", default="conv-26",
-                        help="样本 ID，如 conv-26, conv-30 (default: conv-26)")
-    parser.add_argument("--middle-scale", type=int, default=3,
-                        help="Middle view agent scale K (default: 3)")
-    parser.add_argument("--agent-flag", default=DEFAULT_AGENT_FLAG,
-                        help=f"5-bit flag: rag_view/middle_view/full_view/agentic_graph/visual_search (default: {DEFAULT_AGENT_FLAG})")
-    parser.add_argument("--img-index-base", default=DEFAULT_IMG_INDEX_BASE,
-                        help=f"图片索引根目录 (default: {DEFAULT_IMG_INDEX_BASE})")
-    parser.add_argument("--concurrency", type=int, default=1,
-                        help="兼容旧命令行；评测仅为同步串行，该值会被忽略")
+    
+    # New configuration arguments
+    parser.add_argument("--rag-config", default=str(PROJECT_ROOT / "config" / "rag" / "locomolightrag.json"))
+    parser.add_argument("--memcot-config", default=str(PROJECT_ROOT / "config" / "memcot.json"))
+    
+    # Optional arguments depending on benchmark
+    parser.add_argument("--sample-id", "-c", "--conv", dest="sample_id", default="conv-26",
+                        help="Sample ID for locomo (e.g. conv-26)")
+    parser.add_argument("--skip-category", type=int, nargs="*", default=[], help="Skip QA categories for locomo")
     args = parser.parse_args()
-    if args.concurrency != 1:
-        print(f"Note: --concurrency={args.concurrency} ignored (serial only, same as one_line.py main).")
 
     print(args)
+
+    with open(args.rag_config, 'r', encoding='utf-8') as f:
+        rag_config_data = json.load(f)
+        
+    with open(args.memcot_config, 'r', encoding='utf-8') as f:
+        memcot_config_data = json.load(f)
     
-    model = args.model
-    num_qa = args.num_qa
-    rag_topk = args.rag_topk
+    model = memcot_config_data.get("agent_config", {}).get("model_name", "Qwen/Qwen2.5-14B-Instruct")
+    benchmark = rag_config_data.get("benchmark", "locomo")
+    rag_topk = rag_config_data.get("rag_topk", 10)
+    print(f"Detected benchmark: {benchmark}, model: {model}")
 
     if args.output_dir:
         output_dir = Path(args.output_dir)
@@ -157,123 +121,95 @@ def main():
         safe_model = f"{safe_model}_rag_topk{rag_topk}"
         output_dir = DEFAULT_OUTPUT_DIR / safe_model
 
-    sample_id = args.sample_id
-    conv_prefix = sample_id.replace("-", "")
-    result_file_name = f"{conv_prefix}_react_lightrag_f1.json"
-    output_path = output_dir / (result_file_name if num_qa < 0 else result_file_name)
     debug_root = output_dir / "debug"
 
-    with open(DATA_PATH, "r", encoding="utf-8") as f:
-        data = json.load(f)
+    # Initialize MemCoT
+    print("Initializing MemCoT...")
+    memcot = MemCoT(
+        model=model,
+        memcot_file_path=args.memcot_config,
+        rag_file_path=args.rag_config,
+        rag_top_k=rag_topk,
+        conv_id=None,
+    )
 
-    sample = next((s for s in data if s.get("sample_id") == sample_id), None)
-    if sample is None:
-        available = [s.get("sample_id") for s in data if s.get("sample_id")]
-        raise SystemExit(f"sample_id '{sample_id}' not found. Available: {available}")
-    qa_all = sample["qa"]
-    qa_list = qa_all if num_qa < 0 else qa_all[:num_qa]
+    # Load Dataset
+    if benchmark == "locomo":
+        DATA_PATH = PROJECT_ROOT / "benchmark" / "locomo" / "data" / "locomo10.json"
+        with open(DATA_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        sample = next((s for s in data if s.get("sample_id") == args.sample_id), None)
+        if sample is None:
+            raise SystemExit(f"sample_id '{args.sample_id}' not found.")
+        qa_all = sample["qa"]
+        
+        # apply skipping
+        skip_categories = set(args.skip_category)
+        if skip_categories:
+            qa_all = [qa for qa in qa_all if qa.get("category") not in skip_categories]
+            print("Skipping QA categories: %s -> %d QA remaining" % (sorted(skip_categories), len(qa_all)))
+            
+        result_file_name = f"{args.sample_id.replace('-', '')}_eval.json"
+        
+    elif benchmark == "longmemeval":
+        DATA_PATH = PROJECT_ROOT / "benchmark" / "longmemeval" / "data" / "longmemeval_s_cleaned.json"
+        with open(DATA_PATH, "r", encoding="utf-8") as f:
+            qa_all = json.load(f)
+        result_file_name = "longmemeval_eval.json"
+    else:
+        raise ValueError(f"Unknown benchmark: {benchmark}")
 
-    skip_categories = set(args.skip_category)
-    if skip_categories:
-        qa_list = [qa for qa in qa_list if qa.get("category") not in skip_categories]
-        print("Skipping QA categories: %s -> %d QA remaining" % (sorted(skip_categories), len(qa_list)))
-
-    max_step = args.max_step
-    print(f"Model: {model}")
-    print(f"RAG top-k: {rag_topk}")
-    print(f"Max step: {max_step}")
-    print(f"Output: {output_dir}")
-    print(f"Sample: {sample_id}")
-    print(f"Evaluating {len(qa_list)} QA pairs via ReAct+LightRAG")
-    print("=" * 70)
+    qa_list = qa_all if args.num_qa < 0 else qa_all[:args.num_qa]
+    output_path = output_dir / result_file_name
 
     results = []
     already_ids = set()
 
-    if args.resume:
-        load_path = output_path
-        if not output_path.exists() and num_qa < 0:
-            fallback = output_dir / result_file_name
-            if fallback.exists():
-                load_path = fallback
-                print(f"Full output not found, resuming from {load_path.name}")
-        if load_path.exists():
-            with open(load_path, "r", encoding="utf-8") as f:
-                prev = json.load(f)
-            results = prev.get("details", [])
-            already_ids_list = [r['qa_id'] for r in results]
-            already_ids.update(already_ids_list)
-            print(f"Resuming: {len(results)} done, {len(qa_list) - len(results)} remaining")
-    skip_flag = True
-    if skip_flag:
-        skip_path = "/mnt/petrelfs/leihaodong/ICML/locomo/data/skip"
-        skip_path = Path(skip_path) / f"{sample_id}.json"
-        if skip_path.exists():
-            with open(skip_path, "r", encoding="utf-8") as f:
-                skip_list = json.load(f)
-            skip_ids_list = [qa['qa_id'] for qa in skip_list]
-            already_ids.update(skip_ids_list)
-            print(f"Skipping: {len(skip_list)} done, {len(qa_list) - len(skip_list)} remaining")
+    if args.resume and output_path.exists():
+        with open(output_path, "r", encoding="utf-8") as f:
+            prev = json.load(f)
+        results = prev.get("details", [])
+        already_ids.update([r.get('qa_id', r.get('question_id')) for r in results])
+        print(f"Resuming: {len(results)} done, {len(qa_list) - len(results)} remaining")
 
-    # 构建 working_dir
-    workspace = _conv_id_to_workspace(sample_id)
-    working_dir = os.path.join(args.rag_base, workspace)
-    
-    # 载入 LightRAG（仅初始化一次，后续检索复用同一实例）
-    rag = None
-    if args.rag_type == RAG_TYPE_LIGHTRAG:
-        rag = create_lightrag(working_dir)
-    
-    # 构建会话
-    full_conv = _build_full_conv_context(sample_id)
-    # 初始化视觉搜索
-    img_retriever = None
-    if args.agent_flag[4] == "1":
-        print("初始化视觉搜索...")
-        img_retriever = create_img_retriever(sample_id, img_index_base=args.img_index_base)
-    # ── 单个 QA（同步串行，与 one_line.py 单次 run_react_lightrag 一致） ──
-    def _process_one_qa(i: int, qa: dict) -> dict | None:
-        effective_qa_id = i + 1
+    print(f"Evaluating {len(qa_list)} QA pairs on {benchmark}")
+    print("=" * 70)
+
+    # Important: avoid switching sessions per-QA for locomo (same conv),
+    # otherwise LightRAG's asyncio locks may be bound to different event loops.
+    if benchmark == "locomo":
+        memcot.switch_session(conv_id=args.sample_id)
+
+    for i, qa in enumerate(qa_list):
+        qa_id = qa.get("qa_id") if benchmark == "locomo" else qa.get("question_id")
+        effective_qa_id = qa_id if qa_id is not None else i + 1
+        
         if effective_qa_id in already_ids:
-            return None
+            continue
 
         question = qa["question"]
         answer = qa.get("answer", qa.get("adversarial_answer", ""))
-        category = qa["category"]
+        category = qa.get("category", 0)
 
-        print(f"\n[QA {i+1}/{len(qa_list)}] cat={category} | Q: {question}")
+        print(f"\n[{benchmark} QA {i+1}/{len(qa_list)}] ID: {effective_qa_id} | Q: {question}")
         print(f"  Gold answer: {answer}")
 
-        debug_dir = str(debug_root / f"qa_{i+1}")
-
-        gold_evidence = qa.get("evidence", [])
-        if isinstance(gold_evidence, str):
-            gold_evidence = [gold_evidence] if gold_evidence else []
-        elif not isinstance(gold_evidence, list):
-            gold_evidence = []
+        # Set conversation context for MemCoT (only needed for longmemeval)
+        if benchmark == "longmemeval":
+            idx = qa_all.index(qa)  # conv_id is usually idx_question_id
+            conv_target = f"{idx:04d}_{qa['question_id']}"
+            memcot.switch_session(conv_id=conv_target)
+        debug_dir = str(debug_root / f"qa_{effective_qa_id}")
 
         try_step = 2
         prediction = ""
         final_evidence = []
         last_error = None
+        
         while try_step > 0:
             try:
-                res = run_react_lightrag(
-                    query=question,
-                    conv_id=sample_id,
-                    category=category,
-                    model=model,
-                    output_dir=debug_dir,
-                    rag_top_k=rag_topk,
-                    max_step=max_step,
-                    rag_type=args.rag_type,
-                    working_dir=working_dir,
-                    middle_scale=args.middle_scale,
-                    agent_flag_str=args.agent_flag,
-                    rag=rag,
-                    full_conv=full_conv,
-                    img_retriever=img_retriever,
-                )
+                exit_state = memcot.run(query=question, output_dir=debug_dir, category=category)
+                res = answer_memcot_exit(exit_state)
                 prediction = res.get("answer", "")
                 final_evidence = res.get("final_evidence", [])
                 if prediction:
@@ -281,27 +217,36 @@ def main():
                 last_error = "Prediction is empty"
             except Exception as e:
                 last_error = e
-                print(f"  [QA {i+1}] ERROR: {e}")
+                print(f"  [QA {effective_qa_id}] ERROR: {e}")
                 traceback.print_exc()
             try_step -= 1
 
         if not prediction:
-            raise RuntimeError(f"[QA {i+1}] Empty prediction after retries. Last error: {last_error}")
+            print(f"  [QA {effective_qa_id}] Empty prediction after retries. Last error: {last_error}")
+            prediction = ""
 
-        f1 = compute_f1_for_qa(prediction, answer, category)
+        # Compute metrics
+        f1 = compute_f1_for_qa(prediction, answer, category) if benchmark == "locomo" else f1_score_single(prediction, answer)
+        
+        gold_evidence = qa.get("evidence", []) if benchmark == "locomo" else qa.get("answer_session_ids", [])
+        if isinstance(gold_evidence, str):
+            gold_evidence = [gold_evidence] if gold_evidence else []
+        elif not isinstance(gold_evidence, list):
+            gold_evidence = []
 
         if gold_evidence:
             pred_set = set(str(x) for x in final_evidence)
             gold_set = set(str(x) for x in gold_evidence)
-            recall = round(len(pred_set & gold_set) / len(gold_set), 3)
+            recall = round(len(pred_set & gold_set) / len(gold_set), 3) if len(gold_set) > 0 else 1.0
         else:
             recall = 1.0
 
-        print(f"  [QA {i+1}] Prediction: {prediction}")
-        print(f"  [QA {i+1}] F1: {f1} | Recall: {recall}")
+        print(f"  [QA {effective_qa_id}] Prediction: {prediction}")
+        print(f"  [QA {effective_qa_id}] Match/F1: {f1} | Recall: {recall}")
 
-        return {
-            "qa_id": effective_qa_id,
+        result_dict = {
+            "qa_id": effective_qa_id if benchmark == "locomo" else None,
+            "question_id": effective_qa_id if benchmark == "longmemeval" else None,
             "question": question,
             "gold_answer": str(answer),
             "prediction": prediction,
@@ -311,72 +256,31 @@ def main():
             "final_evidence": final_evidence,
             "gold_evidence": gold_evidence,
         }
-
-    def _collect_result(result_dict: dict | None) -> None:
-        if result_dict is None:
-            return
+        
         results.append(result_dict)
-        already_ids.add(result_dict["qa_id"])
+        already_ids.add(effective_qa_id)
+        
+        # Save incrementally
         f1_scores = [d.get("event_search_f1", 0) for d in results]
         recall_scores = [d.get("recall", 1.0) for d in results]
-        _save_output(output_path, sample_id, model, qa_list, results, f1_scores, recall_scores)
-
-    pending = [(i, qa) for i, qa in enumerate(qa_list) if (i + 1) not in already_ids]
-    print(f"\n待评测 {len(pending)} 个 QA（同步串行）")
-
-    for i, qa in pending:
-        result = _process_one_qa(i, qa)
-        _collect_result(result)
-
-    finalize_lightrag(rag)
-
-    f1_scores = [d.get("event_search_f1", 0) for d in results]
-    recall_scores = [d.get("recall", 1.0) for d in results]
-    mean_f1 = sum(f1_scores) / len(f1_scores) if f1_scores else 0.0
-    mean_recall = sum(recall_scores) / len(recall_scores) if recall_scores else 0.0
-    _save_output(output_path, sample_id, model, qa_list, results, f1_scores, recall_scores)
+        mean_f1 = sum(f1_scores) / len(f1_scores) if f1_scores else 0.0
+        mean_recall = sum(recall_scores) / len(recall_scores) if recall_scores else 0.0
+        
+        output = {
+            "sample_id": args.sample_id if benchmark == "locomo" else "longmemeval",
+            "model": model,
+            "method": "memcot_unified",
+            "n": len(results),
+            "mean_f1": round(mean_f1, 4),
+            "mean_recall": round(mean_recall, 4),
+            "details": results,
+        }
+        os.makedirs(output_path.parent, exist_ok=True)
+        with open(output_path, "w", encoding="utf-8") as f:
+            json.dump(output, f, ensure_ascii=False, indent=2)
 
     print("\n" + "=" * 70)
     print(f"Results saved to: {output_path}")
-    print(f"F1 scores: {f1_scores}")
-    print(f"Mean F1: {mean_f1:.4f}")
-    print(f"Recall scores: {recall_scores}")
-    print(f"Mean Recall: {mean_recall:.4f}")
-
-
-def _qa_id_sort_key(x):
-    return int(str(x or ""))
-
-def _save_output(output_path, sample_id, model, qa_list, results, f1_scores, recall_scores=None):
-    if recall_scores is None:
-        recall_scores = [d.get("recall", 1.0) for d in results if "recall" in d]
-        if len(recall_scores) < len(results):
-            recall_scores = [d.get("recall", 1.0) for d in results]
-    if f1_scores is None:
-        f1_scores = [d.get("event_search_f1", 0) for d in results]
-    details = []
-    for r in results:
-        d = dict(r)
-        if "qa_id" not in d:
-            d["qa_id"] = ""
-        details.append(d)
-    details.sort(key=lambda d: _qa_id_sort_key(d.get("qa_id")))
-
-    mean_f1 = sum(f1_scores) / len(f1_scores) if f1_scores else 0.0
-    mean_recall = sum(recall_scores) / len(recall_scores) if recall_scores else 0.0
-    output = {
-        "sample_id": sample_id,
-        "model": model,
-        "method": "react_lightrag",
-        "n": len(results),
-        "mean_f1": round(mean_f1, 4),
-        "mean_recall": round(mean_recall, 4),
-        "details": details,
-    }
-    os.makedirs(output_path.parent, exist_ok=True)
-    with open(output_path, "w", encoding="utf-8") as f:
-        json.dump(output, f, ensure_ascii=False, indent=2)
-
 
 if __name__ == "__main__":
     main()

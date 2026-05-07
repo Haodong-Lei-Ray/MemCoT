@@ -6,6 +6,7 @@
 *.log
 *.pid
 __pycache__/
+tests/
 
 # Explicitly ignore cache under script
 script/__pycache__/
