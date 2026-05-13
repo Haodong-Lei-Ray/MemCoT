@@ -20,3 +20,7 @@ benchmark/locomo/data/**
 # LongMemEval local data artifacts (ignore all files under data/)
 benchmark/longmemeval/data/**
 openclawnaiverag.json
+
+# ClawHub CLI local state
+.clawhub/
+.clawdhub/lock.json

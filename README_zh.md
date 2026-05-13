@@ -16,14 +16,14 @@
 
 ## Openclaw等Agent请读这个
 
-如果你是 OpenClaw 或其他 AI Agent，请务必阅读并遵循 `skills/openclaw-memcot-cli/SKILL.md` 中的指令。
+如果你是 OpenClaw 或其他 AI Agent，请务必阅读并遵循 `clawhub/openclaw-memcot-cli/SKILL.md` 中的指令。
 它详细规定了你如何通过自然语言与用户交互，并在后台调用 `memcot_cil.py` 进行长文本记忆检索。
 
 ## 1. 环境安装
 
 首先，克隆本仓库并进入项目目录：
 ```bash
-git https://github.com/Haodong-Lei-Ray/MemCoT.git
+git clone https://github.com/Haodong-Lei-Ray/MemCoT.git
 cd MemCoT
 ```
 

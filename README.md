@@ -17,14 +17,14 @@ MemCoT: Test-Time Scaling through Memory-Driven Chain-of-Thought
 
 ## For OpenClaw and Other Agents
 
-If you are OpenClaw or another AI Agent, please read and follow the instructions in `skills/openclaw-memcot-cli/SKILL.md`.
+If you are OpenClaw or another AI Agent, please read and follow the instructions in `clawhub/openclaw-memcot-cli/SKILL.md`.
 It specifies how to interact with users in natural language and call `memcot_cil.py` in the background for long-context memory retrieval.
 
 ## 1. Environment Setup
 
 First, clone this repository and enter the project directory:
 ```bash
-git https://github.com/Haodong-Lei-Ray/MemCoT.git
+git clone https://github.com/Haodong-Lei-Ray/MemCoT.git
 cd MemCoT
 ```
 

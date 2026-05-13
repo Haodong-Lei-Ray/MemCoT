@@ -1,9 +1,21 @@
 ---
 name: openclaw-memcot-cli
-description: 指导 OpenClaw 如何使用 MemCoT CLI 工具进行长文本记忆检索，并基于检索结果直接回答用户问题。
+description: >-
+  Drive the MemCoT CLI (memcot_cil.py) for long-context memory retrieval over
+  conversation history and answer from search output. Use with OpenClaw or other
+  agents when the user mentions MemCoT, memcot search, or long-memory retrieval.
+license: MIT-0
+compatibility: Clone https://github.com/Haodong-Lei-Ray/MemCoT.git, use repo root as cwd, Python installed; follow README for deps.
+metadata:
+  openclaw:
+    requires:
+      bins:
+        - python
+    homepage: https://github.com/Haodong-Lei-Ray/MemCoT
+  version: "1.0.1"
 ---
 
-# OpenClaw MemCoT CLI Skill
+# OpenClaw MemCoT CLI (agent skill)
 
 ## 🎯 你的角色与目标
 
@@ -11,6 +23,19 @@ description: 指导 OpenClaw 如何使用 MemCoT CLI 工具进行长文本记忆
 MemCoT 是一个运行在后台的守护进程，它可以帮你在海量的历史对话记录中进行检索，并生成一段包含丰富上下文的 `prompt`。
 
 你的目标是：**接收用户的自然语言指令，将其转化为对应的 `memcot_cil.py` 终端命令执行，并在拿到检索结果后，直接扮演助手的角色回答用户的问题。**
+
+> **仓库布局**：本 skill 发布在 ClawHub 上为纯文本包。使用 MemCoT 时请克隆仓库并在仓库根目录运行 CLI（见项目 README）。在 ClawHub 上发布时 slug 不能以 `openclaw-` 开头，请使用例如 `--slug memcot-memory-cli`。
+
+## MemCoT 代码初始化
+
+在使用本 skill 中的任何 `memcot_cil.py` 命令前，必须先完成 MemCoT 源码的获取与进入仓库根目录。若用户尚未克隆，请引导其执行：
+
+```bash
+git clone https://github.com/Haodong-Lei-Ray/MemCoT.git
+cd MemCoT
+```
+
+随后在 **该仓库根目录** 按项目 `README` 完成环境创建与依赖安装（如 Conda、`pip install -r re.txt` 等），再执行后续 CLI 与配置步骤。
 
 ## 初始化操作
 ./MemCoT/config/rag/openclawnaiverag.temp.json
