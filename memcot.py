@@ -182,6 +182,7 @@ class MemCoT:
         rag_file_path: str = RAG_CONFIG_PATH,
         conv_id: str | None = None,
         rag_top_k = None,
+        verbose: bool = True,
     ):
         # 初始化RAG基础设施
         self.ragretriever, self.benchmark, self.conversation_base, self.rag_base, self.rag_top_k = load_rag_retrieve(
@@ -191,6 +192,7 @@ class MemCoT:
         self.conv_id = None
         self.conversation = None
         self.img_retriever = None
+        self.verbose = verbose
 
         memcot_cfg = _load_memcot_config(memcot_file_path)
         agent_flag = str(memcot_cfg["agent_flag"])
@@ -275,7 +277,8 @@ class MemCoT:
         
         # panoramic_visual_grounding
         if self.agent_flag[2] == "1":
-            print("初始化视觉搜索...")
+            if self.verbose:
+                print("初始化视觉搜索...")
             self.img_retriever = create_img_retriever(self.conv_id, img_index_base=self.img_index_base)
 
     def run(
@@ -311,7 +314,8 @@ class MemCoT:
             rag_view_missing_information = []
             temp_short_memory: list[dict] = []
             short_memory_dia_ids = [m.get("dia_id", "") for m in short_semantic_memory]
-            grey_print(f"[🦉 MemCoT] No.{step}: Query_queue: {query_queue}")
+            if self.verbose:
+                grey_print(f"[🦉 MemCoT] No.{step}: Query_queue: {query_queue}")
             assert len(query_queue) != 0
             # ─── zoom_in_focal_retrieve1 ───
             rag_results, rag_result_list = self.ragretriever.retrieve_multi(query_queue)
@@ -328,7 +332,8 @@ class MemCoT:
             zoomin_record = []
             # ─── zoom_in_focal_retrieve2 ───
             if agent_flag[0]:
-                morandi_blue_print(f"[🦉 MemCoT Zoom_in_focal_retrieve]")
+                if self.verbose:
+                    morandi_blue_print(f"[🦉 MemCoT Zoom_in_focal_retrieve]")
                 rag_view_result = self.zoom_in_focal_retrieve.run(
                     root_query=root_query,
                     query_queue=query_queue,
@@ -342,7 +347,8 @@ class MemCoT:
                 rag_view_missing_information = rag_view_result.get("missing_information", [])
                 rag_dia_ids = [r.get("dia_id", "") for r in rag_dia]
                 temp_short_memory.extend(rag_dia)
-                morandi_blue_print(f"[🦉 MemCoT] thinking: {rag_view_thinking}")
+                if self.verbose:
+                    morandi_blue_print(f"[🦉 MemCoT] thinking: {rag_view_thinking}")
                 rag_view_record = {
                     "rag_view_useful_dia_ids": rag_dia_ids,
                     "rag_view_thinking": rag_view_thinking,
@@ -352,7 +358,8 @@ class MemCoT:
 
             # ─── zoom_out_context_expansion ───
             if agent_flag[1] and len(temp_short_memory) > 0:
-                morandi_print(f"[🦉 MemCoT Zoom_out_context_expansion]")
+                if self.verbose:
+                    morandi_print(f"[🦉 MemCoT Zoom_out_context_expansion]")
                 middle_view_result = self.zoom_out_context_expansion.run(
                     root_query=root_query,
                     query_queue=query_queue,
@@ -368,7 +375,8 @@ class MemCoT:
                     if r.get("dia_id", "") not in existing_ids:
                         temp_short_memory.append(r)
                         existing_ids.add(r.get("dia_id", ""))
-                morandi_print(f"[🦉 MemCoT] thinking: {middle_view_thinking}")
+                if self.verbose:
+                    morandi_print(f"[🦉 MemCoT] thinking: {middle_view_thinking}")
                 middle_view_record = {
                     "middle_view_useful_dia_ids": [r.get("dia_id", "") for r in middle_dia],
                     "middle_view_thinking": middle_view_thinking,
@@ -451,8 +459,9 @@ class MemCoT:
             }
 
             obs_thinking = obs["thinking"]
-            grey_print(f"[🦉 MemCoT] Observation: {obs_thinking}")
-            grey_print(f"[🦉 MemCoT] can_answer: {obs['can_answer']}")
+            if self.verbose:
+                grey_print(f"[🦉 MemCoT] Observation: {obs_thinking}")
+                grey_print(f"[🦉 MemCoT] can_answer: {obs['can_answer']}")
             trajectory.append({
                 "Act": act_record,
                 "Observation": obs_record,
@@ -532,6 +541,7 @@ if __name__ == "__main__":
     )
     # benchmark
     parser.add_argument("-c", "--conv-id", default="conv-26", help="Conversation ID")
+    parser.add_argument("-q", "--quiet", action="store_true", help="Suppress debug prints")
     args = parser.parse_args()
     query = " ".join(args.query)
     memcot = MemCoT(
@@ -540,6 +550,7 @@ if __name__ == "__main__":
         rag_file_path=args.rag_config,
         rag_top_k=10,
         conv_id=None,
+        verbose=not args.quiet,
     )
     memcot.switch_session(conv_id=args.conv_id)
     try:
