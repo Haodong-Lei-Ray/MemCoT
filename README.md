@@ -5,6 +5,9 @@
 # [MemCoT: Test-Time Scaling through Memory-Driven Chain-of-Thought](https://arxiv.org/abs/2604.08216) 🦉
 [MemCoT: Test-Time Scaling through Memory-Driven Chain-of-Thought](https://arxiv.org/abs/2604.08216)
 
+<img width="1861" height="705" alt="image" src="https://github.com/user-attachments/assets/1e0ec4c8-7b4e-4b14-acd5-92b376ace845" />
+
+
 <p align="center">
   <a href="./README_zh.md"><img src="https://img.shields.io/badge/Lang-%E4%B8%AD%E6%96%87-red?style=for-the-badge" alt="Chinese Version"></a>
   <a href="https://arxiv.org/abs/2604.08216"><img src="https://img.shields.io/badge/Paper-arXiv%3A2604.08216-9cf?style=for-the-badge" alt="Paper"></a>
