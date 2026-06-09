@@ -2,8 +2,8 @@
   <img src="asset/banner.png" alt="MemCoT Banner" width="100%">
 </p>
 
-# MemCoT 🦉
-MemCoT: Test-Time Scaling through Memory-Driven Chain-of-Thought
+# [MemCoT: Test-Time Scaling through Memory-Driven Chain-of-Thought](https://arxiv.org/abs/2604.08216) 🦉
+[MemCoT: Test-Time Scaling through Memory-Driven Chain-of-Thought](https://arxiv.org/abs/2604.08216)
 
 <p align="center">
   <a href="./README_zh.md"><img src="https://img.shields.io/badge/Lang-%E4%B8%AD%E6%96%87-red?style=for-the-badge" alt="Chinese Version"></a>
