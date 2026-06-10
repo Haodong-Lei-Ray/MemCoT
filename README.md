@@ -101,6 +101,16 @@ bash /home/lei/Project/MemCoT/script/run_locomo_qwen_14b.sh
 
 TODO
 
+## Star History
+
+<a href="https://www.star-history.com/?repos=Haodong-Lei-Ray%2FMemCoT&type=date&legend=top-left">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=Haodong-Lei-Ray/MemCoT&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=Haodong-Lei-Ray/MemCoT&type=date&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=Haodong-Lei-Ray/MemCoT&type=date&legend=top-left" />
+ </picture>
+</a>
+
 ## Citation
 
 If you use this codebase, or otherwise found our work valuable, please cite:
