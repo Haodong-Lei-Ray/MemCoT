@@ -3,9 +3,8 @@
 </p>
 
 # [MemCoT: Test-Time Scaling through Memory-Driven Chain-of-Thought](https://arxiv.org/abs/2604.08216) 🦉
-[MemCoT: Test-Time Scaling through Memory-Driven Chain-of-Thought](https://arxiv.org/abs/2604.08216)
 
-<img width="1861" height="705" alt="image" src="https://github.com/user-attachments/assets/1e0ec4c8-7b4e-4b14-acd5-92b376ace845" />
+<img width="1861" height="705" alt="image" src="asset/main.png" />
 
 
 <p align="center">
